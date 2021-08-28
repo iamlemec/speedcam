@@ -73,19 +73,22 @@ class Tracker:
 
     def read_frame(self, flip=True):
         ret, frame = self.stream.read()
-        return frame if ret else None
+        if ret:
+            if flip:
+                return np.ascontiguousarray(np.flip(frame, axis=1))
+            else:
+                return frame
 
     def mark_frame(self, frame):
         coords, quals, labels = self.calc_boxes(frame)
         final = self.plot_boxes(frame, coords, quals, labels)
         return final
 
-    def loop_stream(self, out=None, fps=30):
-        tick = 1/fps
-        tick_ms = int(1000*tick)
+    def loop_stream(self, out=None, fps=30, flip=True):
+        tick = int(1000/fps)
 
         while True:
-            if (frame := self.read_frame()) is None:
+            if (frame := self.read_frame(flip=flip)) is None:
                 break
             final = self.mark_frame(frame)
 
@@ -94,9 +97,9 @@ class Tracker:
             else:
                 out.write(final)
 
-            cv2.waitKey(tick_ms)
+            cv2.waitKey(tick)
 
-    def mark_stream(self, src=0, out_path=None, fps=30):
+    def mark_stream(self, src=0, out_path=None, fps=30, flip=True):
         if out_path is None:
             out = None
         else:
@@ -105,7 +108,7 @@ class Tracker:
 
         self.open_stream(src=src)
         try:
-            self.loop_stream(out=out, fps=fps)
+            self.loop_stream(out=out, fps=fps, flip=flip)
         except KeyboardInterrupt:
             pass
         self.close_stream()
