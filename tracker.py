@@ -23,7 +23,7 @@ class Tracker:
         if self.stream.isOpened():
             return
 
-        self.stream.open(src)
+        self.stream.open('udpsrc port=5000 ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! videoconvert ! appsink', cv2.CAP_GSTREAMER)
 
         if buffer:
             self.stream.set(cv2.CAP_PROP_BUFFERSIZE, buffer)
