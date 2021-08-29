@@ -6,30 +6,40 @@ import traceback
 from threading import Thread
 
 class Tracker:
-    def __init__(self, size=(800, 600), buffer=2):
+    def __init__(self):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True).to(device)
         self.classes = self.model.names
 
         # open local camera
-        self.buffer = buffer
-        self.w, self.h = size
         self.stream = cv2.VideoCapture()
+        self.w = self.h = None
 
     def __del__(self):
         self.close_stream()
 
-    def open_stream(self, src=0):
-        if not self.stream.isOpened():
-            self.stream.open(src)
-            self.stream.set(cv2.CAP_PROP_BUFFERSIZE, self.buffer)
+    def open_stream(self, src=0, buffer=None, size=None):
+        if self.stream.isOpened():
+            return
+
+        self.stream.open(src)
+
+        if buffer:
+            self.stream.set(cv2.CAP_PROP_BUFFERSIZE, buffer)
+
+        if size:
+            self.w, self.h = size
             self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, self.w)
             self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, self.h)
+        else:
+            self.w = self.stream.get(cv2.CAP_PROP_FRAME_WIDTH)
+            self.h = self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT)
 
     def close_stream(self):
         if self.stream.isOpened():
             self.stream.release()
+            self.w = self.h = None
 
     # score a single frame
     def calc_boxes(self, frame):
@@ -84,11 +94,12 @@ class Tracker:
         final = self.plot_boxes(frame, coords, quals, labels)
         return final
 
-    def loop_stream(self, out=None, fps=30, flip=True):
+    def loop_stream(self, out=None, fps=10, flip=True):
         tick = int(1000/fps)
 
         while True:
             if (frame := self.read_frame(flip=flip)) is None:
+                print('no frame')
                 break
             final = self.mark_frame(frame)
 
@@ -99,18 +110,20 @@ class Tracker:
 
             cv2.waitKey(tick)
 
-    def mark_stream(self, src=0, out_path=None, fps=30, flip=True):
+    def mark_stream(self, src=0, out_path=None, fps=10, flip=True, buffer=None, size=None):
+        self.open_stream(src=src, buffer=buffer, size=size)
+
         if out_path is None:
             out = None
         else:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(out_path, four_cc, fps, (self.w, self.h))
 
-        self.open_stream(src=src)
         try:
             self.loop_stream(out=out, fps=fps, flip=flip)
         except KeyboardInterrupt:
             pass
+
         self.close_stream()
 
         if out is None:
