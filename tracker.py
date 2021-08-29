@@ -19,11 +19,14 @@ class Tracker:
     def __del__(self):
         self.close_stream()
 
-    def open_stream(self, src=0, buffer=None, size=None):
+    def open_stream(self, src=0, udp=False, port=5000, buffer=None, size=None):
         if self.stream.isOpened():
             return
 
-        self.stream.open('udpsrc port=5000 ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! videoconvert ! appsink', cv2.CAP_GSTREAMER)
+        if udp:
+            self.stream.open(f'udpsrc port={port} ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! videoconvert ! appsink', cv2.CAP_GSTREAMER)
+        else:
+            self.stream.open(src)
 
         if buffer:
             self.stream.set(cv2.CAP_PROP_BUFFERSIZE, buffer)
@@ -110,8 +113,8 @@ class Tracker:
 
             cv2.waitKey(tick)
 
-    def mark_stream(self, src=0, out_path=None, fps=10, flip=True, buffer=None, size=None):
-        self.open_stream(src=src, buffer=buffer, size=size)
+    def mark_stream(self, out_path=None, fps=10, flip=True, **kwargs):
+        self.open_stream(**kwargs)
 
         if out_path is None:
             out = None
