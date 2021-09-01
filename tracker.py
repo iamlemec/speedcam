@@ -5,6 +5,12 @@ import time
 import traceback
 from threading import Thread
 
+def timestamp():
+    sub = time.time() % 1
+    sec = time.strftime('%Y-%m-%dT%H:%M:%S')
+    mil = int(1000*sub)
+    return f'{sec}.{mil:03d}'
+
 class Tracker:
     def __init__(self):
         # load yolov5 model from torch hub
@@ -19,25 +25,27 @@ class Tracker:
     def __del__(self):
         self.close_stream()
 
-    def open_stream(self, src=0, udp=False, port=5000, buffer=None, size=None):
+    def open_stream(self, src=0, udp=None, buffer=None, size=None):
         if self.stream.isOpened():
             return
 
-        if udp:
+        if udp is not None:
             self.stream.open(f'udpsrc port={port} ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! videoconvert ! appsink', cv2.CAP_GSTREAMER)
         else:
             self.stream.open(src)
 
-        if buffer:
+        if buffer is not None:
             self.stream.set(cv2.CAP_PROP_BUFFERSIZE, buffer)
 
-        if size:
+        if size is not None:
             self.w, self.h = size
             self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, self.w)
             self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, self.h)
         else:
-            self.w = self.stream.get(cv2.CAP_PROP_FRAME_WIDTH)
-            self.h = self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            self.w = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.h = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        print(f'frame size: {self.w} x {self.h}')
 
     def close_stream(self):
         if self.stream.isOpened():
@@ -97,33 +105,33 @@ class Tracker:
         final = self.plot_boxes(frame, coords, quals, labels)
         return final
 
-    def loop_stream(self, out=None, fps=10, flip=True):
-        tick = int(1000/fps)
-
+    def loop_stream(self, out=None, flip=True):
         while True:
             if (frame := self.read_frame(flip=flip)) is None:
                 print('no frame')
-                break
+                continue
+
             final = self.mark_frame(frame)
 
-            if out is None:
-                cv2.imshow('boxes', final)
-            else:
+            if out is not None:
                 out.write(final)
+            else:
+                cv2.imshow('waroncars', final)
 
-            cv2.waitKey(tick)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                return
 
-    def mark_stream(self, out_path=None, fps=10, flip=True, **kwargs):
+    def mark_stream(self, out=None, fps=30, flip=False, **kwargs):
         self.open_stream(**kwargs)
 
-        if out_path is None:
-            out = None
-        else:
+        if out is not None:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(out_path, four_cc, fps, (self.w, self.h))
+        else:
+            out = None
 
         try:
-            self.loop_stream(out=out, fps=fps, flip=flip)
+            self.loop_stream(out=out, flip=flip)
         except KeyboardInterrupt:
             pass
 

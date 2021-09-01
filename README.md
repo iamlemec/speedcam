@@ -13,7 +13,7 @@ ffmpeg -f v4l2 -i /dev/video0 -profile:v high -pix_fmt yuvj420p -level:v 4.1 -pr
 # GStreamer
 
 Server:
-gst-launch-1.0 -v v4l2src device=/dev/video0 ! decodebin ! videoconvert ! jpegenc ! rtpjpegpay ! udpsink host=localhost port=5000
+gst-launch-1.0 -v v4l2src device=/dev/video0 ! decodebin ! videoconvert ! jpegenc ! rtpjpegpay ! udpsink host=DEST_IP port=5000
 
 Client:
 gst-launch-1.0 udpsrc port=5000 ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! autovideosink
