@@ -4,6 +4,8 @@ import numpy as np
 import time
 import traceback
 from threading import Thread
+from collections import deque
+from operator import itemgetter
 
 def timestamp():
     sub = time.time() % 1
@@ -11,8 +13,12 @@ def timestamp():
     mil = int(1000*sub)
     return f'{sec}.{mil:03d}'
 
+##
+## object detection
+##
+
 class Tracker:
-    def __init__(self):
+    def __init__(self, bcut=0.2, qlen=30, qcut=0.2):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True).to(device)
@@ -21,6 +27,12 @@ class Tracker:
         # open local camera
         self.stream = cv2.VideoCapture()
         self.w = self.h = None
+
+        # set up box tracker
+        self.deque = BoxQueue(length=qlen, cutoff=qcut)
+
+        # other options
+        self.bcut = bcut
 
     def __del__(self):
         self.close_stream()
@@ -65,7 +77,7 @@ class Tracker:
 
     # plot output of model
     def plot_boxes(
-        self, frame, coords, quals, labels, thresh=0.2,
+        self, frame, coords, quals, labels,
         box_color=(0, 255, 0), label_font=cv2.FONT_HERSHEY_SIMPLEX
     ):
         n = len(labels)
@@ -76,18 +88,17 @@ class Tracker:
             q, l = quals[i], labels[i]
 
             # if score is less than 0.2 we avoid making a prediction.
-            if q < thresh:
+            if q < self.bcut:
                 continue
 
             # map into real
-            cname = self.classes[l]
             x1, y1 = int(x1*w), int(y1*h)
             x2, y2 = int(x2*w), int(y2*h)
 
             # plot boxes and labels
             cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
             cv2.putText(
-                frame, cname, (x1, y1), label_font, 0.9, box_color, 2
+                frame, l, (x1, y1), label_font, 0.9, box_color, 2
             )
 
         return frame
@@ -100,19 +111,17 @@ class Tracker:
             else:
                 return frame
 
-    def mark_frame(self, frame):
-        coords, quals, labels = self.calc_boxes(frame)
-        final = self.plot_boxes(frame, coords, quals, labels)
-        return final
-
     def loop_stream(self, out=None, flip=True):
         while True:
             if (frame := self.read_frame(flip=flip)) is None:
                 print('no frame')
                 continue
 
-            final = self.mark_frame(frame)
+            coords, quals, labels = self.calc_boxes(frame)
+            match = self.deque.append(zip(labels, coords))
+            labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
 
+            final = self.plot_boxes(frame, coords, quals, labels1)
             if out is not None:
                 out.write(final)
             else:
@@ -122,6 +131,7 @@ class Tracker:
                 return
 
     def mark_stream(self, out=None, fps=30, flip=False, **kwargs):
+        self.deque.reset()
         self.open_stream(**kwargs)
 
         if out is not None:
@@ -142,7 +152,78 @@ class Tracker:
         else:
             out.release()
 
-class ThreadedCamera(object):
+##
+## object tracking
+##
+
+def box_area(l, t, r, b):
+    w = np.maximum(0, r-l)
+    h = np.maximum(0, b-t)
+    return w*h
+
+def box_overlap(box1, box2):
+    l1, t1, r1, b1 = box1
+    l2, t2, r2, b2 = box2
+
+    lx = np.maximum(l1, l2)
+    tx = np.maximum(t1, t2)
+    rx = np.minimum(r1, r2)
+    bx = np.minimum(b1, b2)
+
+    a1 = box_area(l1, t1, r1, b1)
+    a2 = box_area(l2, t2, r2, b2)
+    ax = box_area(lx, tx, rx, bx)
+
+    sim = ax/np.maximum(a1, a2)
+    return 1 - sim
+
+# entry: index, label, qual, coords
+class BoxQueue:
+    def __init__(self, length=30, cutoff=0.2):
+        self.length = length
+        self.cutoff = cutoff
+        self.deque = deque([], length)
+        self.inext = 0
+
+    def reset(self):
+        self.deque.clear()
+        self.inext = 0
+
+    def append(self, boxes):
+        match = []
+
+        for l1, c1 in boxes:
+            bidx = None
+            merr = None
+
+            for bs in reversed(self.deque):
+                errs = [
+                    (i, box_overlap(c1, c2)) for i, l2, c2 in bs if l1 == l2
+                ]
+                midx, merr = min(
+                    errs, key=itemgetter(1), default=(None, None)
+                )
+
+                if midx is not None and merr < self.cutoff:
+                    bidx = midx
+                    break
+
+            if bidx is None:
+                bidx = self.inext
+                self.inext += 1
+                print(l1, bidx, merr)
+
+            match.append((bidx, l1, c1))
+
+        self.deque.append(match)
+
+        return [i for i, _, _ in match]
+
+##
+## testing
+##
+
+class ThreadedCamera:
     def __init__(self, src=0):
         self.capture = cv2.VideoCapture(src)
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
