@@ -3,9 +3,11 @@ import torch
 import numpy as np
 import time
 import traceback
+
 from threading import Thread
 from operator import itemgetter
 from collections import deque
+from pathlib import Path
 
 from kalman import KalmanTracker
 
@@ -156,6 +158,37 @@ class Tracker:
             cv2.destroyAllWindows()
         else:
             out.release()
+
+    def snapshots(self, out_dir, delay=2.0, **kwargs):
+        out_path = Path(out_dir)
+        self.open_stream(**kwargs)
+
+        try:
+            i = 0
+            s = time.time()
+
+            while True:
+                if (frame := self.read_frame(flip=False)) is None:
+                    print('no frame')
+                    continue
+
+                if (t := time.time()) >= s + delay:
+                    fpath = out_path / f'snapshot_{i}.jpg'
+                    print(fpath)
+
+                    cv2.imwrite(str(fpath), frame)
+                    cv2.imshow('snapshot', frame)
+
+                    i += 1
+                    s = t
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        except KeyboardInterrupt:
+            pass
+
+        self.close_stream()
+        cv2.destroyAllWindows()
 
 ##
 ## object tracking
