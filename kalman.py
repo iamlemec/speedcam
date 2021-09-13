@@ -11,8 +11,8 @@ class KalmanTracker:
         self.Z = np.zeros((ndim, ndim))
         self.H = np.block([self.I, self.Z])
 
-        self.R = np.diag(σz**2)
-        Pv = np.diag(σv**2)
+        self.R = np.diag(np.square(σz))
+        Pv = np.diag(np.square(σv))
         self.P0 = np.block([
             [self.R, self.Z],
             [self.Z, Pv]

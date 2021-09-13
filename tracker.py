@@ -4,8 +4,10 @@ import numpy as np
 import time
 import traceback
 from threading import Thread
-from collections import deque
 from operator import itemgetter
+from collections import deque
+
+from kalman import KalmanTracker
 
 def timestamp():
     sub = time.time() % 1
@@ -18,7 +20,7 @@ def timestamp():
 ##
 
 class Tracker:
-    def __init__(self, bcut=0.2, qlen=30, qcut=0.2):
+    def __init__(self, qual_cutoff=0.2, hist_length=250, match_cutoff=0.4, match_timeout=2.0):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True).to(device)
@@ -29,10 +31,10 @@ class Tracker:
         self.w = self.h = None
 
         # set up box tracker
-        self.deque = BoxQueue(length=qlen, cutoff=qcut)
+        self.boxes = Boxes(timeout=match_timeout, cutoff=match_cutoff, length=hist_length)
 
         # other options
-        self.bcut = bcut
+        self.bcut = qual_cutoff
 
     def __del__(self):
         self.close_stream()
@@ -73,6 +75,11 @@ class Tracker:
         quals = data[:, 4]
         labels = data[:, 5].astype('int32')
 
+        qsel = quals >= self.bcut
+        coords = coords[qsel, :]
+        quals = quals[qsel]
+        labels = labels[qsel]
+
         return coords, quals, labels
 
     # plot output of model
@@ -86,10 +93,6 @@ class Tracker:
         for i in range(n):
             x1, y1, x2, y2 = coords[i]
             q, l = quals[i], labels[i]
-
-            # if score is less than 0.2 we avoid making a prediction.
-            if q < self.bcut:
-                continue
 
             # map into real
             x1, y1 = int(x1*w), int(y1*h)
@@ -116,9 +119,11 @@ class Tracker:
             if (frame := self.read_frame(flip=flip)) is None:
                 print('no frame')
                 continue
+            timestamp = time.time()
 
             coords, quals, labels = self.calc_boxes(frame)
-            match = self.deque.append(zip(labels, coords))
+            detect = [(l, c) for l, c in zip(labels, coords)]
+            match, done = self.boxes.update(timestamp, detect)
             labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
 
             final = self.plot_boxes(frame, coords, quals, labels1)
@@ -131,7 +136,7 @@ class Tracker:
                 return
 
     def mark_stream(self, out=None, fps=30, flip=False, **kwargs):
-        self.deque.reset()
+        self.boxes.reset()
         self.open_stream(**kwargs)
 
         if out is not None:
@@ -177,47 +182,100 @@ def box_overlap(box1, box2):
     sim = ax/np.maximum(a1, a2)
     return 1 - sim
 
+kalman_args = {
+    'ndim': 4,
+    'σz': [10, 10, 5, 5],
+    'σv': [100, 100, 10, 10],
+}
+
+# single object state
+class Track:
+    def __init__(self, kalman, length, l, t, z):
+        self.kalman = kalman
+        self.l = l
+        self.t = t
+        self.x, self.P = kalman.start(z)
+        self.hist = deque([(t, z)], length)
+
+    def predict(self, t):
+        dt = t - self.t
+        x1, P1 = self.kalman.predict(self.x, self.P, dt=dt)
+        return x1, P1
+
+    def update(self, t, z):
+        dt = t - self.t
+        self.t = t
+        self.x, self.P = self.kalman.update(self.x, self.P, z, dt=dt)
+        self.hist.append((t, z))
+
 # entry: index, label, qual, coords
-class BoxQueue:
-    def __init__(self, length=30, cutoff=0.2):
-        self.length = length
+class Boxes:
+    def __init__(self, timeout=2.0, cutoff=0.2, length=250):
+        self.timeout = timeout
         self.cutoff = cutoff
-        self.deque = deque([], length)
-        self.inext = 0
+        self.length = length
+        self.kalman = KalmanTracker(**kalman_args)
+        self.reset()
 
     def reset(self):
-        self.deque.clear()
-        self.inext = 0
+        self.nextid = 0
+        self.tracks = {}
 
-    def append(self, boxes):
+    def add(self, l, t, z):
+        i = self.nextid
+        self.nextid += 1
+        self.tracks[i] = Track(self.kalman, self.length, l, t, z)
+        return i
+
+    def pop(self, i):
+        return self.tracks.pop(i)
+
+    def update(self, t, boxes):
+        # precompute predicted positions for tracks
+        locs = {i: trk.predict(t) for i, trk in self.tracks.items()}
+
+        # compute all pairs with difference below cutoff
+        errs = []
+        for k1, (l1, c1) in enumerate(boxes):
+            for i2, trk in self.tracks.items():
+                x1, P1 = locs[i2]
+                l2, c2 = trk.l, x1[:4]
+                if l1 == l2:
+                    e = box_overlap(c1, c2) # this can be improved
+                    if e < self.cutoff:
+                        errs.append((k1, i2, e))
+
+        # unravel match in decreasing order of similarity
+        final = []
+        for _ in range(len(errs)):
+            k, j, e = min(errs, key=itemgetter(2))
+            final.append((k, j, e))
+            errs = [(k1, j1, e1) for k1, j1, e1 in errs if k1 != k and j1 != j]
+            if len(errs) == 0:
+                break
+
+        # update positive matches
+        mapper = {}
+        for k, j, e in final:
+            _, c = boxes[k]
+            self.tracks[j].update(t, c)
+            mapper[k] = j
+
+        # create new tracks for non-matches
         match = []
+        for k, (l, c) in enumerate(boxes):
+            if k not in mapper:
+                mapper[k] = self.add(l, t, c)
+            match.append(mapper[k])
 
-        for l1, c1 in boxes:
-            bidx = None
-            merr = None
+        # clear out old tracks
+        idone = [
+            i for i, trk in self.tracks.items() if t > trk.t + self.timeout
+        ]
+        done = [self.tracks.pop(i) for i in idone]
 
-            for bs in reversed(self.deque):
-                errs = [
-                    (i, box_overlap(c1, c2)) for i, l2, c2 in bs if l1 == l2
-                ]
-                midx, merr = min(
-                    errs, key=itemgetter(1), default=(None, None)
-                )
-
-                if midx is not None and merr < self.cutoff:
-                    bidx = midx
-                    break
-
-            if bidx is None:
-                bidx = self.inext
-                self.inext += 1
-                print(l1, bidx, merr)
-
-            match.append((bidx, l1, c1))
-
-        self.deque.append(match)
-
-        return [i for i, _, _ in match]
+        # return matches and final tracks
+        return match, done
 
 ##
 ## testing
