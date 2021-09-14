@@ -1,8 +1,10 @@
+import time
+import toml
 import cv2
 import torch
-import numpy as np
-import time
 import traceback
+import numpy as np
+import pandas as pd
 
 from threading import Thread
 from operator import itemgetter
@@ -11,18 +13,15 @@ from pathlib import Path
 
 from kalman import KalmanTracker
 
-def timestamp():
-    sub = time.time() % 1
-    sec = time.strftime('%Y-%m-%dT%H:%M:%S')
-    mil = int(1000*sub)
-    return f'{sec}.{mil:03d}'
-
 ##
 ## object detection
 ##
 
 class Tracker:
-    def __init__(self, qual_cutoff=0.2, hist_length=250, match_cutoff=0.4, match_timeout=2.0):
+    def __init__(self,
+        qual_cutoff=0.3, hist_length=250, match_cutoff=0.4, match_timeout=2.0,
+        config_path=None
+    ):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True).to(device)
@@ -37,6 +36,19 @@ class Tracker:
 
         # other options
         self.bcut = qual_cutoff
+
+        # scene/camera config
+        config = toml.load(config_path)
+        if 'scene' in config:
+            scene = config['scene']
+            self.fov_width = scene['width']
+        else:
+            self.fov_width = None
+        if 'camera' in config:
+            camera = config['camera']
+            self.params = np.array(camera['K']), np.array(camera['D'])
+        else:
+            self.params = None
 
     def __del__(self):
         self.close_stream()
@@ -108,25 +120,50 @@ class Tracker:
 
         return frame
 
-    def read_frame(self, flip=True):
+    def read_frame(self, flip=True, undistort=True):
         ret, frame = self.stream.read()
         if ret:
             if flip:
-                return np.ascontiguousarray(np.flip(frame, axis=1))
-            else:
-                return frame
+                frame = np.ascontiguousarray(np.flip(frame, axis=1))
+            if undistort and self.params is not None:
+                newcam, roi = cv2.getOptimalNewCameraMatrix(
+                    *self.params, (self.w, self.h), 1
+                )
+                frame = cv2.undistort(frame, *self.params, newcam)
+            return frame
 
-    def loop_stream(self, out=None, flip=True):
+    def loop_stream(self, out=None, flip=True, tick=1):
+        i = 0
+        s = time.time()
+
         while True:
             if (frame := self.read_frame(flip=flip)) is None:
-                print('no frame')
+                # print('no frame')
                 continue
             timestamp = time.time()
 
+            i += 1
+            if (dt := timestamp - s) >= tick:
+                # print(f'fps: {i/dt}')
+                i = 0
+                s = timestamp
+
+            #
             coords, quals, labels = self.calc_boxes(frame)
             detect = [(l, c) for l, c in zip(labels, coords)]
             match, done = self.boxes.update(timestamp, detect)
             labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
+
+            for i, trk in done.items():
+                lab = self.classes[trk.l]
+                t0, t1 = trk.hist[0][0], trk.hist[-1][0]
+                dt = t1 - t0
+                num = len(trk.hist)
+                pos = np.vstack([h[1][:2] for h in trk.hist])
+                move = (pos.max(axis=0)-pos.min(axis=0)).max()
+                if move >= 0.2:
+                    print(f'{lab} #{i}: N={num}, Δt={dt:.2f}, Δx={move:.3f}')
+                    trk.dataframe().to_csv(f'tracks/{lab}_{i}_{int(t0)}.csv', index=False)
 
             final = self.plot_boxes(frame, coords, quals, labels1)
             if out is not None:
@@ -159,7 +196,7 @@ class Tracker:
         else:
             out.release()
 
-    def snapshots(self, out_dir, delay=2.0, **kwargs):
+    def snapshots(self, out_dir, delay=2.0, display=True, **kwargs):
         out_path = Path(out_dir)
         self.open_stream(**kwargs)
 
@@ -177,7 +214,8 @@ class Tracker:
                     print(fpath)
 
                     cv2.imwrite(str(fpath), frame)
-                    cv2.imshow('snapshot', frame)
+                    if display:
+                        cv2.imshow('snapshot', frame)
 
                     i += 1
                     s = t
@@ -188,7 +226,8 @@ class Tracker:
             pass
 
         self.close_stream()
-        cv2.destroyAllWindows()
+        if display:
+            cv2.destroyAllWindows()
 
 ##
 ## object tracking
@@ -217,8 +256,8 @@ def box_overlap(box1, box2):
 
 kalman_args = {
     'ndim': 4,
-    'σz': [10, 10, 5, 5],
-    'σv': [100, 100, 10, 10],
+    'σz': [0.05, 0.05, 0.05, 0.05],
+    'σv': [0.5, 0.5, 0.5, 0.5],
 }
 
 # single object state
@@ -228,7 +267,7 @@ class Track:
         self.l = l
         self.t = t
         self.x, self.P = kalman.start(z)
-        self.hist = deque([(t, z)], length)
+        self.hist = deque([(t, z, self.x, self.P)], length)
 
     def predict(self, t):
         dt = t - self.t
@@ -239,7 +278,17 @@ class Track:
         dt = t - self.t
         self.t = t
         self.x, self.P = self.kalman.update(self.x, self.P, z, dt=dt)
-        self.hist.append((t, z))
+        self.hist.append((t, z, self.x, self.P))
+
+    def dataframe(self):
+        return pd.DataFrame(
+            np.vstack([np.hstack(h[:3]) for h in self.hist]),
+            columns=[
+                'time', 'x', 'y', 'w', 'h',
+                'kx', 'ky', 'kw', 'kh',
+                'vx', 'vy', 'vw', 'vh'
+            ]
+        )
 
 # entry: index, label, qual, coords
 class Boxes:
@@ -305,7 +354,7 @@ class Boxes:
         idone = [
             i for i, trk in self.tracks.items() if t > trk.t + self.timeout
         ]
-        done = [self.tracks.pop(i) for i in idone]
+        done = {i: self.tracks.pop(i) for i in idone}
 
         # return matches and final tracks
         return match, done
