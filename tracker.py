@@ -7,11 +7,10 @@ import numpy as np
 import pandas as pd
 
 from threading import Thread
-from operator import itemgetter
-from collections import deque
 from pathlib import Path
 
-from kalman import KalmanTracker
+from kalman import BoxTracker
+from analyzer import calc_speed
 
 ##
 ## object detection
@@ -19,7 +18,7 @@ from kalman import KalmanTracker
 
 class Tracker:
     def __init__(self,
-        qual_cutoff=0.3, hist_length=250, match_cutoff=0.4, match_timeout=2.0,
+        qual_cutoff=0.2, hist_length=250, match_cutoff=0.4, match_timeout=2.0,
         config_path=None
     ):
         # load yolov5 model from torch hub
@@ -32,7 +31,7 @@ class Tracker:
         self.w = self.h = None
 
         # set up box tracker
-        self.boxes = Boxes(timeout=match_timeout, cutoff=match_cutoff, length=hist_length)
+        self.boxes = BoxTracker(timeout=match_timeout, cutoff=match_cutoff, length=hist_length)
 
         # other options
         self.bcut = qual_cutoff
@@ -53,7 +52,7 @@ class Tracker:
     def __del__(self):
         self.close_stream()
 
-    def open_stream(self, src=0, udp=None, buffer=None, size=None):
+    def open_stream(self, src=0, udp=None, buffer=None, size=None, undistort=True):
         if self.stream.isOpened():
             return
 
@@ -72,6 +71,16 @@ class Tracker:
         else:
             self.w = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.h = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        if undistort:
+            self.newcam, roi = cv2.getOptimalNewCameraMatrix(
+                *self.params, (self.w, self.h), 0
+            )
+            self.w, self.h = (roi[2] - roi[0]), (roi[3] - roi[1])
+
+        # update full fov
+        self.aspect = self.w/self.h
+        self.fov = self.fov_width, self.fov_width/self.aspect
 
         print(f'frame size: {self.w} x {self.h}')
 
@@ -120,63 +129,67 @@ class Tracker:
 
         return frame
 
-    def read_frame(self, flip=True, undistort=True):
+    def read_frame(self, flip=False, undistort=True):
         ret, frame = self.stream.read()
         if ret:
             if flip:
                 frame = np.ascontiguousarray(np.flip(frame, axis=1))
-            if undistort and self.params is not None:
-                newcam, roi = cv2.getOptimalNewCameraMatrix(
-                    *self.params, (self.w, self.h), 1
-                )
-                frame = cv2.undistort(frame, *self.params, newcam)
+            if undistort:
+                frame = cv2.undistort(frame, *self.params, self.newcam)
             return frame
 
-    def loop_stream(self, out=None, flip=True, tick=1):
+    def loop_stream(self, out=None, flip=False, undistort=True, tick=1):
+        # init fps tracking
         i = 0
         s = time.time()
 
         while True:
-            if (frame := self.read_frame(flip=flip)) is None:
-                # print('no frame')
+            # fetch next frame (blocking)
+            frame = self.read_frame(flip=flip, undistort=undistort)
+            if frame is None:
                 continue
             timestamp = time.time()
 
+            # fps tracking
             i += 1
             if (dt := timestamp - s) >= tick:
                 # print(f'fps: {i/dt}')
                 i = 0
                 s = timestamp
 
-            #
+            # get boxes and update tracker
             coords, quals, labels = self.calc_boxes(frame)
             detect = [(l, c) for l, c in zip(labels, coords)]
             match, done = self.boxes.update(timestamp, detect)
             labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
 
+            # display any completed tracks
             for i, trk in done.items():
-                lab = self.classes[trk.l]
-                t0, t1 = trk.hist[0][0], trk.hist[-1][0]
-                dt = t1 - t0
-                num = len(trk.hist)
-                pos = np.vstack([h[1][:2] for h in trk.hist])
-                move = (pos.max(axis=0)-pos.min(axis=0)).max()
+                data = trk.dataframe()
+                rang = data.max() - data.min()
+                move = np.sqrt(rang['x']**2+rang['y']**2)
                 if move >= 0.2:
-                    print(f'{lab} #{i}: N={num}, Δt={dt:.2f}, Δx={move:.3f}')
-                    trk.dataframe().to_csv(f'tracks/{lab}_{i}_{int(t0)}.csv', index=False)
+                    t0 = data['time'].iloc[0]
+                    lab = self.classes[trk.l]
+                    N, Δ = len(data), rang['t']
+                    v, σ = calc_speed(data, self.fov)
+                    print(f'{lab} #{i}: N={N}, Δt={Δ:.2f}, Δz={move:.3f}, v={v:.3f}, σ={σ:.3f}')
+                    data.to_csv(f'tracks/{lab}_{i}_{int(t0)}.csv', index=False)
 
+            # display/save frame
             final = self.plot_boxes(frame, coords, quals, labels1)
             if out is not None:
                 out.write(final)
             else:
                 cv2.imshow('waroncars', final)
 
+            # get user input
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 return
 
-    def mark_stream(self, out=None, fps=30, flip=False, **kwargs):
+    def mark_stream(self, out=None, fps=30, flip=False, undistort=True, **kwargs):
         self.boxes.reset()
-        self.open_stream(**kwargs)
+        self.open_stream(undistort=undistort, **kwargs)
 
         if out is not None:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -185,7 +198,7 @@ class Tracker:
             out = None
 
         try:
-            self.loop_stream(out=out, flip=flip)
+            self.loop_stream(out=out, flip=flip, undistort=undistort)
         except KeyboardInterrupt:
             pass
 
@@ -228,136 +241,6 @@ class Tracker:
         self.close_stream()
         if display:
             cv2.destroyAllWindows()
-
-##
-## object tracking
-##
-
-def box_area(l, t, r, b):
-    w = np.maximum(0, r-l)
-    h = np.maximum(0, b-t)
-    return w*h
-
-def box_overlap(box1, box2):
-    l1, t1, r1, b1 = box1
-    l2, t2, r2, b2 = box2
-
-    lx = np.maximum(l1, l2)
-    tx = np.maximum(t1, t2)
-    rx = np.minimum(r1, r2)
-    bx = np.minimum(b1, b2)
-
-    a1 = box_area(l1, t1, r1, b1)
-    a2 = box_area(l2, t2, r2, b2)
-    ax = box_area(lx, tx, rx, bx)
-
-    sim = ax/np.maximum(a1, a2)
-    return 1 - sim
-
-kalman_args = {
-    'ndim': 4,
-    'σz': [0.05, 0.05, 0.05, 0.05],
-    'σv': [0.5, 0.5, 0.5, 0.5],
-}
-
-# single object state
-class Track:
-    def __init__(self, kalman, length, l, t, z):
-        self.kalman = kalman
-        self.l = l
-        self.t = t
-        self.x, self.P = kalman.start(z)
-        self.hist = deque([(t, z, self.x, self.P)], length)
-
-    def predict(self, t):
-        dt = t - self.t
-        x1, P1 = self.kalman.predict(self.x, self.P, dt=dt)
-        return x1, P1
-
-    def update(self, t, z):
-        dt = t - self.t
-        self.t = t
-        self.x, self.P = self.kalman.update(self.x, self.P, z, dt=dt)
-        self.hist.append((t, z, self.x, self.P))
-
-    def dataframe(self):
-        return pd.DataFrame(
-            np.vstack([np.hstack(h[:3]) for h in self.hist]),
-            columns=[
-                'time', 'x', 'y', 'w', 'h',
-                'kx', 'ky', 'kw', 'kh',
-                'vx', 'vy', 'vw', 'vh'
-            ]
-        )
-
-# entry: index, label, qual, coords
-class Boxes:
-    def __init__(self, timeout=2.0, cutoff=0.2, length=250):
-        self.timeout = timeout
-        self.cutoff = cutoff
-        self.length = length
-        self.kalman = KalmanTracker(**kalman_args)
-        self.reset()
-
-    def reset(self):
-        self.nextid = 0
-        self.tracks = {}
-
-    def add(self, l, t, z):
-        i = self.nextid
-        self.nextid += 1
-        self.tracks[i] = Track(self.kalman, self.length, l, t, z)
-        return i
-
-    def pop(self, i):
-        return self.tracks.pop(i)
-
-    def update(self, t, boxes):
-        # precompute predicted positions for tracks
-        locs = {i: trk.predict(t) for i, trk in self.tracks.items()}
-
-        # compute all pairs with difference below cutoff
-        errs = []
-        for k1, (l1, c1) in enumerate(boxes):
-            for i2, trk in self.tracks.items():
-                x1, P1 = locs[i2]
-                l2, c2 = trk.l, x1[:4]
-                if l1 == l2:
-                    e = box_overlap(c1, c2) # this can be improved
-                    if e < self.cutoff:
-                        errs.append((k1, i2, e))
-
-        # unravel match in decreasing order of similarity
-        final = []
-        for _ in range(len(errs)):
-            k, j, e = min(errs, key=itemgetter(2))
-            final.append((k, j, e))
-            errs = [(k1, j1, e1) for k1, j1, e1 in errs if k1 != k and j1 != j]
-            if len(errs) == 0:
-                break
-
-        # update positive matches
-        mapper = {}
-        for k, j, e in final:
-            _, c = boxes[k]
-            self.tracks[j].update(t, c)
-            mapper[k] = j
-
-        # create new tracks for non-matches
-        match = []
-        for k, (l, c) in enumerate(boxes):
-            if k not in mapper:
-                mapper[k] = self.add(l, t, c)
-            match.append(mapper[k])
-
-        # clear out old tracks
-        idone = [
-            i for i, trk in self.tracks.items() if t > trk.t + self.timeout
-        ]
-        done = {i: self.tracks.pop(i) for i in idone}
-
-        # return matches and final tracks
-        return match, done
 
 ##
 ## testing
