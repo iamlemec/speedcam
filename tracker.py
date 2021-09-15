@@ -169,7 +169,7 @@ class Tracker:
                 rang = data.max() - data.min()
                 move = np.sqrt(rang['x']**2+rang['y']**2)
                 if move >= 0.2:
-                    t0 = data['time'].iloc[0]
+                    t0 = data['t'].iloc[0]
                     lab = self.classes[trk.l]
                     N, Δ = len(data), rang['t']
                     v, σ = calc_speed(data, self.fov)

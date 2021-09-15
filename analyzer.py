@@ -62,11 +62,11 @@ def calc_speed(data, fov, units='imperial'):
     vx = res_x.params['t']
     vy = res_y.params['t']
 
-    σx = res_x.cov_params().loc['t', 't']
-    σy = res_y.cov_params().loc['t', 't']
+    σ2x = res_x.cov_params().loc['t', 't']
+    σ2y = res_y.cov_params().loc['t', 't']
 
     v = np.sqrt(vx**2+vy**2)
-    σ = np.sqrt(σx**2+σy**2)
+    σ = np.sqrt(σ2x+σ2y)
 
     if units == 'imperial':
         v *= mph_per_ms

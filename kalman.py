@@ -1,5 +1,7 @@
 import numpy as np
+import numpy.linalg as la
 import pandas as pd
+from scipy.stats import chi2
 
 from operator import itemgetter
 from collections import deque
@@ -35,7 +37,7 @@ class KalmanTracker:
 
         A = self.H @ P1 @ self.H.T + self.R
         B = P1 @ self.H.T
-        K = np.linalg.solve(A, B.T).T
+        K = la.solve(A, B.T).T
 
         I = np.eye(2*self.ndim)
         G = I - K @ self.H
@@ -60,6 +62,18 @@ class KalmanTracker:
 ## object tracking
 ##
 
+# ensure covmat is positive-semidefinite
+def robust_inverse(V):
+    try:
+        Vi = la.inv(V)
+    except la.LinAlgError:
+        λ, U = la.eig(V)
+        λ1 = np.maximum(0, λ.real)
+        Λ1 = np.diagflat(λ1)
+        V1 = U @ Λ1 @ U.T
+        Vi = la.inv(V1)
+    return Vi
+
 def box_area(l, t, r, b):
     w = np.maximum(0, r-l)
     h = np.maximum(0, b-t)
@@ -81,9 +95,15 @@ def box_overlap(box1, box2):
     sim = ax/np.maximum(a1, a2)
     return 1 - sim
 
+def mahalanobis_distance(x, P, z):
+    z1 = z - x
+    Pi = robust_inverse(P)
+    d = z1 @ Pi @ z1
+    return chi2.cdf(d, 4)
+
 kalman_args = {
     'ndim': 4,
-    'σz': [0.05, 0.05, 0.05, 0.05],
+    'σz': [0.1, 0.1, 0.1, 0.1],
     'σv': [0.5, 0.5, 0.5, 0.5],
 }
 
@@ -147,10 +167,13 @@ class BoxTracker:
         errs = []
         for k1, (l1, c1) in enumerate(boxes):
             for i2, trk in self.tracks.items():
-                x1, P1 = locs[i2]
-                l2, c2 = trk.l, x1[:4]
+                l2 = trk.l
+                x2f, P2f = locs[i2]
+                x2, P2 = x2f[:4], P2f[:4,:4]
                 if l1 == l2:
-                    e = box_overlap(c1, c2) # this can be improved
+                    ea = box_overlap(c1, x2) # this can be improved
+                    eb = mahalanobis_distance(x2, P2, c1)
+                    e = np.minimum(ea, eb)
                     if e < self.cutoff:
                         errs.append((k1, i2, e))
 
