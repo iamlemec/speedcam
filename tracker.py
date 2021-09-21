@@ -8,9 +8,22 @@ import pandas as pd
 
 from threading import Thread
 from pathlib import Path
+from collections import deque
 
 from kalman import BoxTracker
 from analyzer import calc_speed
+from tools import write_video
+
+##
+## tools
+##
+
+def datestring(t=None, tz='US/Eastern'):
+    if t is None:
+        t = time.time()
+    d = pd.to_datetime(t, unit='s', utc=True)
+    d1 = d.tz_convert(tz)
+    return d1.strftime('%Y%m%dT%H%M%S')
 
 ##
 ## object detection
@@ -18,8 +31,8 @@ from analyzer import calc_speed
 
 class Tracker:
     def __init__(self,
-        qual_cutoff=0.2, hist_length=250, match_cutoff=0.4, match_timeout=2.0,
-        config_path=None
+        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.9,
+        match_timeout=2.0, video_length=100, config_path='config.toml', tracks_dir='tracks'
     ):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -31,10 +44,18 @@ class Tracker:
         self.w = self.h = None
 
         # set up box tracker
-        self.boxes = BoxTracker(timeout=match_timeout, cutoff=match_cutoff, length=hist_length)
+        self.boxes = BoxTracker(timeout=match_timeout, match_cutoff=match_cutoff, track_length=track_length)
+        self.tracks_dir = tracks_dir
 
-        # other options
-        self.bcut = qual_cutoff
+        # video saving
+        if video_length is not None:
+            self.video = deque([], video_length)
+        else:
+            self.video = None
+
+        # box detection options
+        self.edge_cutoff = edge_cutoff # reject boxes nearly touching edges
+        self.qual_cutoff = qual_cutoff # cutoff for detection quality from YOLOv5
 
         # scene/camera config
         config = toml.load(config_path)
@@ -72,17 +93,19 @@ class Tracker:
             self.w = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.h = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        if undistort:
+        if undistort and self.params is not None:
             self.newcam, roi = cv2.getOptimalNewCameraMatrix(
                 *self.params, (self.w, self.h), 0
             )
-            self.w, self.h = (roi[2] - roi[0]), (roi[3] - roi[1])
+            self.w = roi[2] - roi[0] + 1
+            self.h = roi[3] - roi[1] + 1
 
         # update full fov
         self.aspect = self.w/self.h
         self.fov = self.fov_width, self.fov_width/self.aspect
 
         print(f'frame size: {self.w} x {self.h}')
+        print(f'fov size: {self.fov[0]:.2f} x {self.fov[1]:.2f}')
 
     def close_stream(self):
         if self.stream.isOpened():
@@ -98,10 +121,14 @@ class Tracker:
         quals = data[:, 4]
         labels = data[:, 5].astype('int32')
 
-        qsel = quals >= self.bcut
-        coords = coords[qsel, :]
-        quals = quals[qsel]
-        labels = labels[qsel]
+        edist = 0.5 - np.abs(coords-0.5)
+        qsel = quals >= self.qual_cutoff
+        esel = (edist >= self.edge_cutoff).all(axis=1)
+        sel = qsel & esel
+
+        coords = coords[sel, :]
+        quals = quals[sel]
+        labels = labels[sel]
 
         return coords, quals, labels
 
@@ -134,50 +161,73 @@ class Tracker:
         if ret:
             if flip:
                 frame = np.ascontiguousarray(np.flip(frame, axis=1))
-            if undistort:
+            if undistort and self.params is not None:
                 frame = cv2.undistort(frame, *self.params, self.newcam)
             return frame
 
-    def loop_stream(self, out=None, flip=False, undistort=True, tick=1):
-        # init fps tracking
-        i = 0
-        s = time.time()
+    def process_track(self, num, trk):
+        data = trk.dataframe()
 
+        # compute differentials
+        Δt = data['t'].iloc[-1] - data['t'].iloc[0]
+        Δx = data['x'].iloc[-1] - data['x'].iloc[0]
+
+        # reject short tracks
+        if Δx < 0.25:
+            return
+
+        # track stats
+        N = len(data)
+        t0 = data['t'].iloc[0]
+        lab = self.classes[trk.l]
+        μv, σv = calc_speed(data, self.fov)
+
+        # video params
+        fps = int(len(self.video/Δt))
+        tstr = datestring(t0)
+        fpath = f'{self.tracks_dir}/{tstr}_{lab}_{num}'
+
+        # report detection
+        print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}')
+
+        # store stats and video
+        if self.tracks_dir is not None:
+            data.to_csv(f'{fpath}.csv', index=False)
+            if self.video is not None:
+                write_video(f'{fpath}.mp4', self.video, 15, (self.w, self.h))
+
+    def loop_stream(self, out=None, flip=False, undistort=True, scale=None, tick=1):
         while True:
             # fetch next frame (blocking)
             frame = self.read_frame(flip=flip, undistort=undistort)
             if frame is None:
                 continue
+
             timestamp = time.time()
 
-            # fps tracking
-            i += 1
-            if (dt := timestamp - s) >= tick:
-                # print(f'fps: {i/dt}')
-                i = 0
-                s = timestamp
-
-            # get boxes and update tracker
+            # get boxes
             coords, quals, labels = self.calc_boxes(frame)
-            detect = [(l, c) for l, c in zip(labels, coords)]
-            match, done = self.boxes.update(timestamp, detect)
-            labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
+            coords1 = coords.copy()
+            coords1[:,2:] -= coords1[:,:2] # (x1, y1, x2, y2) → (x, y, w, h)
 
-            # display any completed tracks
-            for i, trk in done.items():
-                data = trk.dataframe()
-                rang = data.max() - data.min()
-                move = np.sqrt(rang['x']**2+rang['y']**2)
-                if move >= 0.2:
-                    t0 = data['t'].iloc[0]
-                    lab = self.classes[trk.l]
-                    N, Δ = len(data), rang['t']
-                    v, σ = calc_speed(data, self.fov)
-                    print(f'{lab} #{i}: N={N}, Δt={Δ:.2f}, Δz={move:.3f}, v={v:.3f}, σ={σ:.3f}')
-                    data.to_csv(f'tracks/{lab}_{i}_{int(t0)}.csv', index=False)
+            # update tracker
+            detect = [(l, c) for l, c in zip(labels, coords1)]
+            match, done = self.boxes.update(timestamp, detect)
+
+            # handle completed tracks
+            for num, trk in done.items():
+                self.process_track(num, trk)
+
+            # draw boxes and possible scale
+            labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
+            final = self.plot_boxes(frame, coords, quals, labels1)
+            if scale is not None:
+                size1 = int(scale*self.w), int(scale*self.h)
+                final = cv2.resize(final, size1, interpolation=cv2.INTER_LANCZOS4)
 
             # display/save frame
-            final = self.plot_boxes(frame, coords, quals, labels1)
+            if self.video is not None:
+                self.video.append(final)
             if out is not None:
                 out.write(final)
             else:
@@ -187,7 +237,7 @@ class Tracker:
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 return
 
-    def mark_stream(self, out=None, fps=30, flip=False, undistort=True, **kwargs):
+    def mark_stream(self, out=None, fps=30, flip=False, undistort=True, scale=None, **kwargs):
         self.boxes.reset()
         self.open_stream(undistort=undistort, **kwargs)
 
@@ -198,7 +248,7 @@ class Tracker:
             out = None
 
         try:
-            self.loop_stream(out=out, flip=flip, undistort=undistort)
+            self.loop_stream(out=out, flip=flip, undistort=undistort, scale=scale)
         except KeyboardInterrupt:
             pass
 
@@ -241,45 +291,3 @@ class Tracker:
         self.close_stream()
         if display:
             cv2.destroyAllWindows()
-
-##
-## testing
-##
-
-class ThreadedCamera:
-    def __init__(self, src=0):
-        self.capture = cv2.VideoCapture(src)
-        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-        self.fps = 1/30
-        self.fps_ms = int(self.fps * 1000)
-
-        # Start frame retrieval thread
-        self.thread = Thread(target=self.update, args=())
-        self.thread.daemon = True
-        self.thread.start()
-
-    def __del__(self):
-        self.capture.release()
-
-    def update(self):
-        while True:
-            if self.capture.isOpened():
-                self.status, self.frame = self.capture.read()
-            time.sleep(self.fps)
-
-    def show_frame(self):
-        cv2.imshow('frame', self.frame)
-        cv2.waitKey(self.fps_ms)
-
-    def stream(self):
-        while True:
-            try:
-                self.show_frame()
-            except AttributeError:
-                pass
-            except:
-                break
-        cv2.destroyAllWindows()

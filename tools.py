@@ -1,0 +1,55 @@
+import cv2
+
+##
+## tools
+##
+
+def write_video(path, frames, fps, dims):
+    print(f'writing {len(frames)} frames to: {path}')
+    four_cc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(path, four_cc, fps, dims)
+    for f in frames:
+        out.write(f)
+    out.release()
+
+##
+## testing
+##
+
+class ThreadedCamera:
+    def __init__(self, src=0):
+        self.capture = cv2.VideoCapture(src)
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+        self.fps = 1/30
+        self.fps_ms = int(self.fps * 1000)
+
+        # Start frame retrieval thread
+        self.thread = Thread(target=self.update, args=())
+        self.thread.daemon = True
+        self.thread.start()
+
+    def __del__(self):
+        self.capture.release()
+
+    def update(self):
+        while True:
+            if self.capture.isOpened():
+                self.status, self.frame = self.capture.read()
+            time.sleep(self.fps)
+
+    def show_frame(self):
+        cv2.imshow('frame', self.frame)
+        cv2.waitKey(self.fps_ms)
+
+    def stream(self):
+        while True:
+            try:
+                self.show_frame()
+            except AttributeError:
+                pass
+            except:
+                break
+        cv2.destroyAllWindows()

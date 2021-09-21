@@ -1,5 +1,6 @@
 [scene]
 width = 25.76 # width of field in meters
+height = 14.49 # used as fallback for analyzer (assumes 768 x 432)
 
 [camera]
 K = [
