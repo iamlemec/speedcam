@@ -55,7 +55,7 @@ def plot_track(path='tracks', disp='speed', ax=None):
 
 # requires field of view info → fov: w x h
 def calc_speed(data, fov, units='imperial'):
-    data = data.copy().assign(one=1)
+    data = data.copy()
     data['t'] -= data['t'].iloc[0]
     data['x'] *= fov[0]
     data['y'] *= fov[1]
@@ -86,9 +86,11 @@ def track_info(path='tracks', data=None, fov='config.toml', units='imperial'):
     if data is None:
         data = load_track(path)
     if type(data) is dict:
-        return pd.DataFrame([
+        total = pd.DataFrame([
             track_info(path=fn, data=df, fov=fov, units=units) for fn, df in data.items()
         ])
+        total['time'] = pd.to_datetime(total['time'])
+        return total
     else:
         ts, lab, num = path_info(path)
         rang = data.max() - data.min()
@@ -96,6 +98,6 @@ def track_info(path='tracks', data=None, fov='config.toml', units='imperial'):
         Δx, Δy = rang['x'], rang['y']
         v, σ = calc_speed(data, fov, units=units)
         return {
-            'time': ts, 'label': lab, 'number': num, 'frames': N,
-            'Δt': Δt, 'Δx': Δx, 'Δy': Δy, 'v': v, 'σ': σ,
+            'fname': path, 'time': ts, 'label': lab, 'number': num,
+            'frames': N, 'Δt': Δt, 'Δx': Δx, 'Δy': Δy, 'v': v, 'σ': σ,
         }

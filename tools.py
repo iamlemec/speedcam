@@ -5,7 +5,6 @@ import cv2
 ##
 
 def write_video(path, frames, fps, dims):
-    print(f'writing {len(frames)} frames to: {path}')
     four_cc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(path, four_cc, fps, dims)
     for f in frames:

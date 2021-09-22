@@ -169,17 +169,17 @@ class Tracker:
         data = trk.dataframe()
 
         # compute differentials
+        N = len(data)
         Δt = data['t'].iloc[-1] - data['t'].iloc[0]
         Δx = data['x'].iloc[-1] - data['x'].iloc[0]
 
         # reject short tracks
-        if Δx < 0.25:
+        if abs(Δx) < 0.25 or N <= 2:
             return
 
         # track stats
-        N = len(data)
         t0 = data['t'].iloc[0]
-        lab = self.classes[trk.l]
+        lab = self.classes[trk.l].replace(' ', '')
         μv, σv = calc_speed(data, self.fov)
 
         # video params

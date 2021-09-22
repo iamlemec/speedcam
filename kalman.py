@@ -155,10 +155,11 @@ class Track:
 
 # entry: index, label, qual, coords
 class BoxTracker:
-    def __init__(self, timeout=2.0, match_cutoff=0.5, track_length=250):
+    def __init__(self, timeout=2.0, match_cutoff=0.5, time_decay=1.0, track_length=250):
         self.timeout = timeout
         self.match_cutoff = match_cutoff
         self.track_length = track_length
+        self.time_decay = time_decay
         self.kalman = KalmanTracker(**kalman_args)
         self.i = 0 # unique frame id
         self.reset()
@@ -185,9 +186,12 @@ class BoxTracker:
         for k1, (l1, c1) in enumerate(boxes):
             for i2, trk in self.tracks.items():
                 l2 = trk.l
+                dt = t - trk.t
                 x2, P2 = locs[i2]
                 if l1 == l2:
-                    e = mahalanobis_distance(x2, P2, c1)
+                    qt = np.exp(-self.time_decay*dt)
+                    e0 = mahalanobis_distance(x2, P2, c1)
+                    e = e0**qt
                     if e < self.match_cutoff:
                         errs.append((k1, i2, e))
 
