@@ -1,6 +1,6 @@
 # War on Cars
 
-Speed tracking using YOLOv5 and persistent objects
+Speed tracking using YOLOv5 and Kalman filter matching
 
 # FFMPEG
 

@@ -185,13 +185,15 @@ class Tracker:
         # video params
         fps = int(len(self.video/Δt))
         tstr = datestring(t0)
-        fpath = f'{self.tracks_dir}/{tstr}_{lab}_{num}'
 
         # report detection
         print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}')
 
         # store stats and video
         if self.tracks_dir is not None:
+            if not os.path.isdir(self.tracks_dir):
+                os.mkdir(self.tracks_dir)
+            fpath = f'{self.tracks_dir}/{tstr}_{lab}_{num}'
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
                 write_video(f'{fpath}.mp4', self.video, 15, (self.w, self.h))
