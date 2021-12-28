@@ -1,7 +1,15 @@
-[scene]
-width = 25.76 # width of field in meters
-height = 14.49 # used as fallback for analyzer (assumes 768 x 432)
+## width calculation
+# distance = 11.48 m
+# fov angle = 80 deg
+# chop loss = 30%
+# width = (1-loss)*2*dist*tan(fov/2*pi/180)
 
+# physical scene size
+[scene]
+width = 13.48 # width of field in meters
+height = 7.58 # used as fallback for analyzer (assumes 768 x 432)
+
+# camera curvature parameters
 [camera]
 K = [
     [544.2930701406385, 0.0, 361.61351986360523],

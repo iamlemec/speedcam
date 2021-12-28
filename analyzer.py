@@ -12,6 +12,7 @@ colors = {
 }
 
 mph_per_ms = 2.23694
+kph_per_ms = 3.6
 
 def load_track(path='tracks', norm=True):
     if type(path) is list:
@@ -54,7 +55,7 @@ def plot_track(path='tracks', disp='speed', ax=None):
             )
 
 # requires field of view info → fov: w x h
-def calc_speed(data, fov, units='imperial'):
+def calc_speed(data, fov, units='mph'):
     data = data.copy()
     data['t'] -= data['t'].iloc[0]
     data['x'] *= fov[0]
@@ -72,9 +73,12 @@ def calc_speed(data, fov, units='imperial'):
     v = np.sqrt(vx**2+vy**2)
     σ = np.sqrt(σ2x+σ2y)
 
-    if units == 'imperial':
+    if units == 'mph':
         v *= mph_per_ms
         σ *= mph_per_ms
+    elif units == 'kph':
+        v *= kph_per_ms
+        σ *= kph_per_ms
 
     return v, σ
 

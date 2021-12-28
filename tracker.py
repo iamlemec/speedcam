@@ -1,3 +1,4 @@
+import os
 import time
 import toml
 import cv2
@@ -31,12 +32,12 @@ def datestring(t=None, tz='US/Eastern'):
 
 class Tracker:
     def __init__(self,
-        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.9,
-        match_timeout=2.0, video_length=100, config_path='config.toml', tracks_dir='tracks'
+        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.8, model_size='yolov5x',
+        match_timeout=1.5, video_length=100, config_path='config.toml', tracks_dir='tracks'
     ):
         # load yolov5 model from torch hub
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True).to(device)
+        self.model = torch.hub.load('ultralytics/yolov5', model_size, pretrained=True).to(device)
         self.classes = self.model.names
 
         # open local camera
@@ -50,6 +51,7 @@ class Tracker:
         # video saving
         if video_length is not None:
             self.video = deque([], video_length)
+            self.times = deque([], video_length)
         else:
             self.video = None
 
@@ -78,7 +80,11 @@ class Tracker:
             return
 
         if udp is not None:
-            self.stream.open(f'udpsrc port={port} ! application/x-rtp,encoding-name=JPEG,payload=26 ! rtpjpegdepay ! jpegdec ! videoconvert ! appsink', cv2.CAP_GSTREAMER)
+            gs_ops = [
+                f'udpsrc port={udp}', 'application/x-rtp,encoding-name=JPEG,payload=26',
+                'rtpjpegdepay', 'jpegdec', 'videoconvert', 'appsink'
+            ]
+            self.stream.open(' ! '.join(gs_ops), cv2.CAP_GSTREAMER)
         else:
             self.stream.open(src)
 
@@ -103,6 +109,7 @@ class Tracker:
         # update full fov
         self.aspect = self.w/self.h
         self.fov = self.fov_width, self.fov_width/self.aspect
+        print(self.fov)
 
         print(f'frame size: {self.w} x {self.h}')
         print(f'fov size: {self.fov[0]:.2f} x {self.fov[1]:.2f}')
@@ -131,6 +138,28 @@ class Tracker:
         labels = labels[sel]
 
         return coords, quals, labels
+
+    # compute features for kalman filter
+    def calc_features(self, frame, coords):
+        # convert to (cx, cy, w, h)
+        boxes = np.hstack([
+            0.5*(coords[:,:2] + coords[:,2:]), # center
+            coords[:,2:] - coords[:,:2] # dimensions
+        ])
+
+        # get thumbnails
+        h, w, _ = frame.shape
+        pixels = (coords*[w, h, w, h]).astype(np.int)
+        thumbs = [frame[p[1]:p[3], p[0]:p[2]]/255 for p in pixels]
+
+        # get average color
+        if len(thumbs) > 0:
+            colors = np.vstack([np.mean(t, axis=(0, 1)) for t in thumbs])
+        else:
+            colors = np.empty((0, 3))
+
+        # combine into features
+        return np.hstack([boxes, colors])
 
     # plot output of model
     def plot_boxes(
@@ -183,7 +212,8 @@ class Tracker:
         μv, σv = calc_speed(data, self.fov)
 
         # video params
-        fps = int(len(self.video/Δt))
+        fdt = self.times[-1] - self.times[0]
+        fps = len(self.video)/fdt
         tstr = datestring(t0)
 
         # report detection
@@ -196,7 +226,7 @@ class Tracker:
             fpath = f'{self.tracks_dir}/{tstr}_{lab}_{num}'
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
-                write_video(f'{fpath}.mp4', self.video, 15, (self.w, self.h))
+                write_video(f'{fpath}.mp4', self.video, fps, (self.w, self.h))
 
     def loop_stream(self, out=None, flip=False, undistort=True, scale=None, tick=1):
         while True:
@@ -205,24 +235,26 @@ class Tracker:
             if frame is None:
                 continue
 
+            # record receive time
             timestamp = time.time()
 
-            # get boxes
+            # get features
             coords, quals, labels = self.calc_boxes(frame)
-            coords1 = coords.copy()
-            coords1[:,2:] -= coords1[:,:2] # (x1, y1, x2, y2) → (x, y, w, h)
+            feats = self.calc_features(frame, coords)
 
             # update tracker
-            detect = [(l, c) for l, c in zip(labels, coords1)]
+            detect = list(zip(labels, feats))
             match, done = self.boxes.update(timestamp, detect)
 
             # handle completed tracks
             for num, trk in done.items():
                 self.process_track(num, trk)
 
-            # draw boxes and possible scale
+            # draw boxes on screen
             labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
             final = self.plot_boxes(frame, coords, quals, labels1)
+
+            # maybe rescale output image
             if scale is not None:
                 size1 = int(scale*self.w), int(scale*self.h)
                 final = cv2.resize(final, size1, interpolation=cv2.INTER_LANCZOS4)
@@ -230,6 +262,7 @@ class Tracker:
             # display/save frame
             if self.video is not None:
                 self.video.append(final)
+                self.times.append(timestamp)
             if out is not None:
                 out.write(final)
             else:
@@ -245,7 +278,7 @@ class Tracker:
 
         if out is not None:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(out_path, four_cc, fps, (self.w, self.h))
+            out = cv2.VideoWriter(out, four_cc, fps, (self.w, self.h))
         else:
             out = None
 

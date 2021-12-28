@@ -110,15 +110,20 @@ def mahalanobis_distance(x, P, z):
     d = z1 @ Pi @ z1
     return chi2.cdf(d, 4)
 
+# x, y, w, h, r, g, b
 kalman_args = {
-    'ndim': 4,
-    'σz': [0.05, 0.05, 0.05, 0.05],
-    'σv': [0.5, 0.5, 0.1, 0.1],
+    'ndim': 7,
+    'σz': [0.05, 0.05, 0.05, 0.05, 0.05, 0.05, 0.05],
+    'σv': [0.5, 0.5, 0.1, 0.1, 0.1, 0.1, 0.1],
 }
 
 # single object state
+# i: frame index
+# t: timestamp
+# z: measurement
+# m: thumbnail
 class Track:
-    def __init__(self, kalman, length, i, t, z, l):
+    def __init__(self, kalman, length, i, l, t, z):
         self.kalman = kalman
         self.l = l
         self.t = t
@@ -145,9 +150,10 @@ class Track:
         data = pd.DataFrame(
             np.vstack([np.hstack(h[:4]) for h in self.hist]),
             columns=[
-                'i', 't', 'x', 'y', 'w', 'h',
-                'kx', 'ky', 'kw', 'kh',
-                'vx', 'vy', 'vw', 'vh'
+                'i', 't',
+                'x', 'y', 'w', 'h', 'cr', 'cg', 'cb',
+                'kx', 'ky', 'kw', 'kh', 'kr', 'kg', 'kb',
+                'vx', 'vy', 'vw', 'vh', 'vr', 'vg', 'vb',
             ]
         )
         data['i'] = data['i'].astype(np.int)
@@ -155,7 +161,7 @@ class Track:
 
 # entry: index, label, qual, coords
 class BoxTracker:
-    def __init__(self, timeout=2.0, match_cutoff=0.5, time_decay=1.0, track_length=250):
+    def __init__(self, timeout=2.0, match_cutoff=0.5, time_decay=2.0, track_length=250):
         self.timeout = timeout
         self.match_cutoff = match_cutoff
         self.track_length = track_length
@@ -168,10 +174,10 @@ class BoxTracker:
         self.nextid = 0
         self.tracks = {}
 
-    def add(self, i, t, z, l):
+    def add(self, i, l, t, z):
         ni = self.nextid
         self.nextid += 1
-        self.tracks[ni] = Track(self.kalman, self.track_length, self.i, t, z, l)
+        self.tracks[ni] = Track(self.kalman, self.track_length, self.i, l, t, z)
         return ni
 
     def pop(self, i):
@@ -183,14 +189,14 @@ class BoxTracker:
 
         # compute all pairs with difference below cutoff
         errs = []
-        for k1, (l1, c1) in enumerate(boxes):
+        for k1, (l1, z1) in enumerate(boxes):
             for i2, trk in self.tracks.items():
                 l2 = trk.l
                 dt = t - trk.t
                 x2, P2 = locs[i2]
                 if l1 == l2:
                     qt = np.exp(-self.time_decay*dt)
-                    e0 = mahalanobis_distance(x2, P2, c1)
+                    e0 = mahalanobis_distance(x2, P2, z1)
                     e = e0**qt
                     if e < self.match_cutoff:
                         errs.append((k1, i2, e))
@@ -207,15 +213,15 @@ class BoxTracker:
         # update positive matches
         mapper = {}
         for k, j, e in final:
-            _, c = boxes[k]
-            self.tracks[j].update(self.i, t, c)
+            l, z = boxes[k]
+            self.tracks[j].update(self.i, t, z)
             mapper[k] = j
 
         # create new tracks for non-matches
         match = []
-        for k, (l, c) in enumerate(boxes):
+        for k, (l, z) in enumerate(boxes):
             if k not in mapper:
-                mapper[k] = self.add(self.i, t, c, l)
+                mapper[k] = self.add(self.i, l, t, z)
             match.append(mapper[k])
 
         # clear out old tracks

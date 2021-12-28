@@ -2,6 +2,19 @@
 
 Speed tracking using YOLOv5 and Kalman filter matching
 
+# Basic
+
+```python
+addr = '192.168.1.232' # find this
+port = '554' # default
+path = 'live/ch1' # ch0 for HD
+username = 'username' # fill in
+password = 'password' # fill in
+src = f'rtsp://{username}:{password}@{addr}:{port}/{path}'
+track = Tracker()
+track.mark_stream(src=src)
+```
+
 # FFMPEG
 
 Original:
