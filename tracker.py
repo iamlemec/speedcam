@@ -217,7 +217,7 @@ class Tracker:
         tstr = datestring(t0)
 
         # report detection
-        print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}')
+        print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}, fps={fps:.3f}')
 
         # store stats and video
         if self.tracks_dir is not None:

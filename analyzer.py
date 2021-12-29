@@ -5,6 +5,7 @@ import pandas as pd
 import statsmodels.formula.api as smf
 
 from glob import glob
+from pathlib import Path
 
 colors = {
     'car': 'blue',
@@ -13,6 +14,26 @@ colors = {
 
 mph_per_ms = 2.23694
 kph_per_ms = 3.6
+
+def get_track_time(fpath):
+    chunks = fpath.name.split('_', 1)
+    if len(chunks) == 0:
+        return None
+    else:
+        stamp, _ = chunks
+        return pd.to_datetime(stamp)
+
+def date_range(min_time=None, max_time=None, path='tracks'):
+    path = Path(path)
+    fpaths = list(path.glob('*.csv'))
+    ftimes = [get_track_time(fn) for fn in fpaths]
+    if min_time is not None:
+        min_time = pd.to_datetime(min_time)
+        fpaths = [fn for fn, ft in zip(fpaths, ftimes) if ft >= min_time]
+    if max_time is not None:
+        max_time = pd.to_datetime(max_time)
+        fpaths = [fn for fn, ft in zip(fpaths, ftimes) if ft <= max_time]
+    return list(fpaths)
 
 def load_track(path='tracks', norm=True):
     if type(path) is list:
@@ -82,7 +103,7 @@ def calc_speed(data, fov, units='mph'):
 
     return v, σ
 
-def track_info(path='tracks', data=None, fov='config.toml', units='imperial'):
+def track_info(path='tracks', data=None, fov='config.toml', units='mph'):
     if type(fov) is str:
         config = toml.load(fov)
         scene = config['scene']
