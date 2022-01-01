@@ -1,7 +1,19 @@
 import cv2
+import pandas as pd
 
 ##
-## tools
+## dates
+##
+
+def datestring(t=None, tz='US/Eastern'):
+    if t is None:
+        t = time.time()
+    d = pd.to_datetime(t, unit='s', utc=True)
+    d1 = d.tz_convert(tz)
+    return d1.strftime('%Y%m%dT%H%M%S')
+
+##
+## video
 ##
 
 def write_video(path, frames, fps, dims):

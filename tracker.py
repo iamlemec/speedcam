@@ -1,4 +1,9 @@
+#!/usr/bin/env
+
+# disable numpy multithreading
 import os
+os.environ['OPENBLAS_NUM_THREADS'] = '1'
+
 import time
 import toml
 import cv2
@@ -13,18 +18,7 @@ from collections import deque
 
 from kalman import BoxTracker
 from analyzer import calc_speed
-from tools import write_video
-
-##
-## tools
-##
-
-def datestring(t=None, tz='US/Eastern'):
-    if t is None:
-        t = time.time()
-    d = pd.to_datetime(t, unit='s', utc=True)
-    d1 = d.tz_convert(tz)
-    return d1.strftime('%Y%m%dT%H%M%S')
+from tools import datestring, write_video
 
 ##
 ## object detection
@@ -33,20 +27,19 @@ def datestring(t=None, tz='US/Eastern'):
 class Tracker:
     def __init__(self,
         qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.8, model_size='yolov5x',
-        match_timeout=1.5, video_length=100, config_path='config.toml', tracks_dir='tracks'
+        match_timeout=1.5, video_length=100, undistort=True, config_path='config.toml',
     ):
         # load yolov5 model from torch hub
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model = torch.hub.load('ultralytics/yolov5', model_size, pretrained=True).to(device)
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model = torch.hub.load('ultralytics/yolov5', model_size, pretrained=True, device=self.device)
         self.classes = self.model.names
 
-        # open local camera
+        # create camera interface
         self.stream = cv2.VideoCapture()
         self.w = self.h = None
 
         # set up box tracker
         self.boxes = BoxTracker(timeout=match_timeout, match_cutoff=match_cutoff, track_length=track_length)
-        self.tracks_dir = tracks_dir
 
         # video saving
         if video_length is not None:
@@ -61,13 +54,9 @@ class Tracker:
 
         # scene/camera config
         config = toml.load(config_path)
-        if 'scene' in config:
-            scene = config['scene']
-            self.fov_width = scene['width']
-        else:
-            self.fov_width = None
-        if 'camera' in config:
-            camera = config['camera']
+        scene, camera = config['scene'], config.get('camera', None)
+        self.fov_width = scene['width']
+        if undistort and camera is not None:
             self.params = np.array(camera['K']), np.array(camera['D'])
         else:
             self.params = None
@@ -75,7 +64,7 @@ class Tracker:
     def __del__(self):
         self.close_stream()
 
-    def open_stream(self, src=0, udp=None, buffer=None, size=None, undistort=True):
+    def open_stream(self, src=0, udp=None, buffer=None, size=None):
         if self.stream.isOpened():
             return
 
@@ -99,17 +88,15 @@ class Tracker:
             self.w = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.h = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        if undistort and self.params is not None:
+        if self.params is not None:
             self.newcam, roi = cv2.getOptimalNewCameraMatrix(
                 *self.params, (self.w, self.h), 0
             )
             self.w = roi[2] - roi[0] + 1
             self.h = roi[3] - roi[1] + 1
 
-        # update full fov
         self.aspect = self.w/self.h
         self.fov = self.fov_width, self.fov_width/self.aspect
-        print(self.fov)
 
         print(f'frame size: {self.w} x {self.h}')
         print(f'fov size: {self.fov[0]:.2f} x {self.fov[1]:.2f}')
@@ -149,7 +136,7 @@ class Tracker:
 
         # get thumbnails
         h, w, _ = frame.shape
-        pixels = (coords*[w, h, w, h]).astype(np.int)
+        pixels = (coords*[w, h, w, h]).astype(int)
         thumbs = [frame[p[1]:p[3], p[0]:p[2]]/255 for p in pixels]
 
         # get average color
@@ -185,16 +172,19 @@ class Tracker:
 
         return frame
 
-    def read_frame(self, flip=False, undistort=True):
+    def read_frame(self, flip=False, scale=None):
         ret, frame = self.stream.read()
         if ret:
+            if self.params is not None:
+                frame = cv2.undistort(frame, *self.params, self.newcam)
             if flip:
                 frame = np.ascontiguousarray(np.flip(frame, axis=1))
-            if undistort and self.params is not None:
-                frame = cv2.undistort(frame, *self.params, self.newcam)
+            if scale is not None:
+                size1 = int(scale*self.w), int(scale*self.h)
+                frame = cv2.resize(frame, size1, interpolation=cv2.INTER_LANCZOS4)
             return frame
 
-    def process_track(self, num, trk):
+    def process_track(self, num, trk, tracks=None):
         data = trk.dataframe()
 
         # compute differentials
@@ -220,18 +210,18 @@ class Tracker:
         print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}, fps={fps:.3f}')
 
         # store stats and video
-        if self.tracks_dir is not None:
-            if not os.path.isdir(self.tracks_dir):
-                os.mkdir(self.tracks_dir)
-            fpath = f'{self.tracks_dir}/{tstr}_{lab}_{num}'
+        if tracks is not None:
+            if not os.path.isdir(tracks):
+                os.mkdir(tracks)
+            fpath = os.path.join(tracks, f'{tstr}_{lab}_{num}')
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
                 write_video(f'{fpath}.mp4', self.video, fps, (self.w, self.h))
 
-    def loop_stream(self, out=None, flip=False, undistort=True, scale=None, tick=1):
+    def loop_stream(self, out=True, tracks=None, flip=False, scale=None):
         while True:
             # fetch next frame (blocking)
-            frame = self.read_frame(flip=flip, undistort=undistort)
+            frame = self.read_frame(flip=flip, scale=scale)
             if frame is None:
                 continue
 
@@ -242,61 +232,60 @@ class Tracker:
             coords, quals, labels = self.calc_boxes(frame)
             feats = self.calc_features(frame, coords)
 
-            # update tracker
+            # update tracker - SLOW
             detect = list(zip(labels, feats))
             match, done = self.boxes.update(timestamp, detect)
 
             # handle completed tracks
             for num, trk in done.items():
-                self.process_track(num, trk)
+                self.process_track(num, trk, tracks=tracks)
 
             # draw boxes on screen
             labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
             final = self.plot_boxes(frame, coords, quals, labels1)
 
-            # maybe rescale output image
-            if scale is not None:
-                size1 = int(scale*self.w), int(scale*self.h)
-                final = cv2.resize(final, size1, interpolation=cv2.INTER_LANCZOS4)
-
-            # display/save frame
+            # rolling save frame
             if self.video is not None:
                 self.video.append(final)
                 self.times.append(timestamp)
-            if out is not None:
-                out.write(final)
-            else:
+
+            # display/save frame
+            if out is True:
                 cv2.imshow('waroncars', final)
+            elif out is not False:
+                out.write(final)
 
             # get user input
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 return
 
-    def mark_stream(self, out=None, fps=30, flip=False, undistort=True, scale=None, **kwargs):
+    def mark_stream(self, src=0, udp=None, out=True, **kwargs):
         self.boxes.reset()
-        self.open_stream(undistort=undistort, **kwargs)
+        self.open_stream(src=src, udp=udp)
 
-        if out is not None:
+        if type(out) is str:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
             out = cv2.VideoWriter(out, four_cc, fps, (self.w, self.h))
-        else:
-            out = None
+
+        def cleanup():
+            self.close_stream()
+            if out is True:
+                cv2.destroyAllWindows()
+            elif out is not False:
+                out.release()
 
         try:
-            self.loop_stream(out=out, flip=flip, undistort=undistort, scale=scale)
+            self.loop_stream(out=out, **kwargs)
         except KeyboardInterrupt:
             pass
+        except Exception as e:
+            cleanup()
+            raise e
 
-        self.close_stream()
+        cleanup()
 
-        if out is None:
-            cv2.destroyAllWindows()
-        else:
-            out.release()
-
-    def snapshots(self, out_dir, delay=2.0, display=True, **kwargs):
-        out_path = Path(out_dir)
-        self.open_stream(**kwargs)
+    def snapshots(self, src=0, udp=None, out=None, delay=2.0, display=True):
+        self.open_stream(src=src, udp=udp)
 
         try:
             i = 0
@@ -308,10 +297,11 @@ class Tracker:
                     continue
 
                 if (t := time.time()) >= s + delay:
-                    fpath = out_path / f'snapshot_{i}.jpg'
-                    print(fpath)
+                    if out is not None:
+                        fpath = os.path.join(out, f'snapshot_{i}.jpg')
+                        cv2.imwrite(fpath, frame)
+                        print(fpath)
 
-                    cv2.imwrite(str(fpath), frame)
                     if display:
                         cv2.imshow('snapshot', frame)
 
@@ -326,3 +316,8 @@ class Tracker:
         self.close_stream()
         if display:
             cv2.destroyAllWindows()
+
+# main entry point
+if __name__ == '__main__':
+    import fire
+    fire.Fire(Tracker)

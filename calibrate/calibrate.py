@@ -26,8 +26,8 @@ def splitfn(fn):
 parser = argparse.ArgumentParser(description='Calibrate camera lense distortion.')
 parser.add_argument('images', type=str, help='glob pattern for image files')
 parser.add_argument('output', type=str, default='params.toml', help='path to parameter output file')
-parser.add_argument('--square_size', type=float, default=1.0, help='physical size of squares in cm')
-parser.add_argument('--debug_dir', type=str, default=None, help='where to output test files')
+parser.add_argument('--square-size', type=float, default=1.0, help='physical size of squares in cm')
+parser.add_argument('--debug-dir', type=str, default=None, help='where to output test files')
 args = parser.parse_args()
 
 # get paths
