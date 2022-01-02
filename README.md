@@ -11,7 +11,7 @@ rtsp://username:password@192.168.1.232:554/live/ch1
 
 This will start the tracker and output data to the `tracks` directory, while outputting match stats to the console in real time.
 ```bash
-python3 tracker.py mark_stream --src STREAM_URL --tracks tracks
+python3 tracker.py track --src STREAM_URL --tracks tracks
 ```
 There are a bunch of options you can use to tweak the algorithm if you look at the `Tracker` constructor in `tracker.py`.
 
@@ -19,7 +19,7 @@ You can also directly use the Python interface with something like this
 ```python
 import tracker
 track = Tracker()
-track.mark_stream(src=STREAM_URL, tracks='tracks')
+track.track(src=STREAM_URL, tracks='tracks')
 ```
 Note that this might cause issues if you preload `numpy` in IPython. If you see very high multithreaded CPU usage, set the flag
 ```bash
