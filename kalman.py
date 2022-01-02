@@ -161,8 +161,8 @@ class Track:
 
 # entry: index, label, qual, coords
 class BoxTracker:
-    def __init__(self, timeout=2.0, match_cutoff=0.5, time_decay=2.0, track_length=250):
-        self.timeout = timeout
+    def __init__(self, match_timeout=2.0, match_cutoff=0.5, time_decay=2.0, track_length=250):
+        self.match_timeout = match_timeout
         self.match_cutoff = match_cutoff
         self.track_length = track_length
         self.time_decay = time_decay
@@ -226,7 +226,7 @@ class BoxTracker:
 
         # clear out old tracks
         idone = [
-            i for i, trk in self.tracks.items() if t > trk.t + self.timeout
+            i for i, trk in self.tracks.items() if t > trk.t + self.match_timeout
         ]
         done = {i: self.tracks.pop(i) for i in idone}
 

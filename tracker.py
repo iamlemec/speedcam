@@ -26,36 +26,41 @@ from tools import datestring, write_video
 
 class Tracker:
     def __init__(self,
-        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.8, model_size='yolov5x',
-        match_timeout=1.5, video_length=100, undistort=True, config_path='config.toml',
+        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.8, match_timeout=1.5,
+        time_decay=2.0, video_length=100, undistort=True, model_type='ultralytics/yolov5',
+        model_size='yolov5x', config_path='config.toml'
     ):
         # load yolov5 model from torch hub
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model = torch.hub.load('ultralytics/yolov5', model_size, pretrained=True, device=self.device)
-        self.classes = self.model.names
+        if model_type is not None:
+            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            self.model = torch.hub.load(model_type, model_size, pretrained=True, device=self.device)
+            self.classes = self.model.names
 
-        # create camera interface
-        self.stream = cv2.VideoCapture()
-        self.w = self.h = None
+        # box detection options
+        self.edge_cutoff = edge_cutoff # reject boxes nearly touching edges
+        self.qual_cutoff = qual_cutoff # cutoff for detection quality from YOLOv5
 
         # set up box tracker
-        self.boxes = BoxTracker(timeout=match_timeout, match_cutoff=match_cutoff, track_length=track_length)
+        self.boxes = BoxTracker(
+            match_timeout=match_timeout, match_cutoff=match_cutoff,
+            time_decay=time_decay, track_length=track_length
+        )
 
         # video saving
         if video_length is not None:
             self.video = deque([], video_length)
             self.times = deque([], video_length)
         else:
-            self.video = None
+            self.video = self.times = None
 
-        # box detection options
-        self.edge_cutoff = edge_cutoff # reject boxes nearly touching edges
-        self.qual_cutoff = qual_cutoff # cutoff for detection quality from YOLOv5
+        # create camera interface
+        self.stream = cv2.VideoCapture()
+        self.w = self.h = None
 
         # scene/camera config
-        config = toml.load(config_path)
-        scene, camera = config['scene'], config.get('camera', None)
-        self.fov_width = scene['width']
+        config = toml.load(config_path) if config_path is not None else {}
+        scene, camera = config.get('scene', {}), config.get('camera', None)
+        self.fov_width = scene.get('width', 1)
         if undistort and camera is not None:
             self.params = np.array(camera['K']), np.array(camera['D'])
         else:
@@ -220,10 +225,14 @@ class Tracker:
 
     def loop_stream(self, out=True, tracks=None, flip=False, scale=None):
         while True:
+            t0 = time.time()
+
             # fetch next frame (blocking)
             frame = self.read_frame(flip=flip, scale=scale)
             if frame is None:
                 continue
+
+            t1 = time.time()
 
             # record receive time
             timestamp = time.time()
@@ -255,11 +264,16 @@ class Tracker:
             elif out is not False:
                 out.write(final)
 
+            t2 = time.time()
+
+            print(f'Fetch time: {t1-t0}')
+            print(f'Model time: {t2-t1}')
+
             # get user input
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 return
 
-    def mark_stream(self, src=0, udp=None, out=True, **kwargs):
+    def track(self, src=0, udp=None, out=True, **kwargs):
         self.boxes.reset()
         self.open_stream(src=src, udp=udp)
 
@@ -283,6 +297,51 @@ class Tracker:
             raise e
 
         cleanup()
+
+    def record(self, src=0, udp=None, out=None, fps=30, size=None, display=True):
+        delay = 1/fps
+        if type(size) is str:
+            size = [int(i) for i in size.lower().split('x')]
+
+        # open input stream
+        self.open_stream(src=src, udp=udp, size=size)
+
+        # open output stream
+        if out is not None:
+            four_cc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(out, four_cc, fps, (self.w, self.h))
+
+        try:
+            s = time.time()
+
+            while True:
+                if (frame := self.read_frame(flip=False)) is None:
+                    print('no frame')
+                    continue
+
+                if (t := time.time()) >= s + delay:
+                    if out is not None:
+                        out.write(frame)
+
+                    if display:
+                        cv2.imshow('snapshot', frame)
+
+                    s = t
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        except KeyboardInterrupt:
+            pass
+
+        # close input stream
+        self.close_stream()
+
+        # close output stream
+        if out is not None:
+            out.release()
+
+        if display:
+            cv2.destroyAllWindows()
 
     def snapshots(self, src=0, udp=None, out=None, delay=2.0, display=True):
         self.open_stream(src=src, udp=udp)
