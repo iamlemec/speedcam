@@ -7,17 +7,13 @@ os.environ['OPENBLAS_NUM_THREADS'] = '1'
 import time
 import cv2
 import torch
-import traceback
 import numpy as np
 import pandas as pd
-
-from threading import Thread
-from pathlib import Path
 from collections import deque
 
 from kalman import BoxTracker
 from analyzer import calc_speed
-from tools import datestring, load_config, write_video, Streamer
+from tools import datestring, load_config, write_video, Streamer, StreamerThread
 
 ##
 ## object detection
@@ -58,7 +54,7 @@ class Tracker:
         params = config['params']
 
         # create streaming interface
-        self.stream = Streamer(params=params)
+        self.streamer = Streamer(params=params)
 
     # score a single frame
     def calc_boxes(self, frame):
@@ -158,66 +154,71 @@ class Tracker:
             fpath = os.path.join(tracks, f'{tstr}_{lab}_{num}')
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
-                write_video(f'{fpath}.mp4', self.video, fps, self.stream.size)
+                write_video(f'{fpath}.mp4', self.video, fps, self.streamer.size)
 
-    def loop_stream(self, out=True, tracks=None, flip=False, scale=None):
-        while True:
-            # fetch next frame (blocking)
-            frame = self.stream.read_frame(flip=flip, scale=scale)
-            if frame is None:
-                continue
-
-            # record receive time
-            timestamp = time.time()
-
-            # get features
-            coords, quals, labels = self.calc_boxes(frame)
-            feats = self.calc_features(frame, coords)
-
-            # update tracker - SLOW
-            detect = list(zip(labels, feats))
-            match, done = self.boxes.update(timestamp, detect)
-
-            # handle completed tracks
-            for num, trk in done.items():
-                self.process_track(num, trk, tracks=tracks)
-
-            # draw boxes on screen
-            labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
-            final = self.plot_boxes(frame, coords, quals, labels1)
-
-            # rolling save frame
-            if self.video is not None:
-                self.video.append(final)
-                self.times.append(timestamp)
-
-            # display/save frame
-            if out is True:
-                cv2.imshow('waroncars', final)
-            elif out is not False:
-                out.write(final)
-
-            # get user input
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                return
-
-    def track(self, src=0, udp=None, out=True, size=None, **kwargs):
+    def stream(self, src=0, udp=None, out=True, tracks=None, size=None, flip=False, scale=None):
+        # reset tracker
         self.boxes.reset()
-        self.stream.open_stream(src=src, udp=udp, size=size)
 
+        # start input stream
+        self.streamer.open_stream(src=src, udp=udp, size=size)
+        thread = StreamerThread(self.streamer, flip=flip, scale=scale)
+        thread.start()
+
+        # open output stream
         if type(out) is str:
             four_cc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(out, four_cc, fps, self.stream.size)
+            out = cv2.VideoWriter(out, four_cc, fps, self.streamer.size)
 
+        # cleanup call for later
         def cleanup():
-            self.stream.close_stream()
+            thread.close() # send exit signal
+            self.streamer.close_stream()
+
             if out is True:
                 cv2.destroyAllWindows()
             elif out is not False:
                 out.release()
 
         try:
-            self.loop_stream(out=out, **kwargs)
+            while True:
+                # fetch next frame
+                if (frame := thread.get()) is None:
+                    continue
+
+                # record receive time
+                timestamp = time.time()
+
+                # get features
+                coords, quals, labels = self.calc_boxes(frame)
+                feats = self.calc_features(frame, coords)
+
+                # update tracker
+                detect = list(zip(labels, feats))
+                match, done = self.boxes.update(timestamp, detect)
+
+                # handle completed tracks
+                for num, trk in done.items():
+                    self.process_track(num, trk, tracks=tracks)
+
+                # draw boxes on screen
+                labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
+                final = self.plot_boxes(frame, coords, quals, labels1)
+
+                # rolling save frame
+                if self.video is not None:
+                    self.video.append(final)
+                    self.times.append(timestamp)
+
+                # display/save frame
+                if out is True:
+                    cv2.imshow('waroncars', final)
+                elif out is not False:
+                    out.write(final)
+
+                # get user input
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
         except KeyboardInterrupt:
             pass
         except Exception as e:
@@ -226,89 +227,7 @@ class Tracker:
 
         cleanup()
 
-class Recorder:
-    def __init__(self, config_path='config.toml'):
-        config = load_config(config_path)
-        params = config['params']
-        self.stream = Streamer(params=params)
-
-    def video(self, src=0, udp=None, out=None, fps=30, size=None, display=True):
-        delay = 1/fps
-
-        # open input stream
-        self.stream.open_stream(src=src, udp=udp, size=size)
-
-        # open output stream
-        if out is not None:
-            four_cc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(out, four_cc, fps, self.stream.size)
-
-        try:
-            s = time.time()
-
-            while True:
-                if (frame := self.stream.read_frame(flip=True)) is None:
-                    print('no frame')
-                    continue
-
-                if (t := time.time()) >= s + delay:
-                    s = t
-
-                    if out is not None:
-                        out.write(frame)
-
-                    if display:
-                        cv2.imshow('snapshot', frame)
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        except KeyboardInterrupt:
-            pass
-
-        # close input stream
-        self.stream.close_stream()
-
-        # close output stream
-        if out is not None:
-            out.release()
-
-        if display:
-            cv2.destroyAllWindows()
-
-    def images(self, src=0, udp=None, out=None, size=None, delay=2.0, display=True):
-        self.stream.open_stream(src=src, udp=udp, size=size)
-
-        try:
-            i = 0
-            s = time.time()
-
-            while True:
-                if (frame := self.stream.read_frame()) is None:
-                    print('no frame')
-                    continue
-
-                if (t := time.time()) >= s + delay:
-                    if out is not None:
-                        fpath = os.path.join(out, f'snapshot_{i}.jpg')
-                        cv2.imwrite(fpath, frame)
-                        print(fpath)
-
-                    if display:
-                        cv2.imshow('snapshot', frame)
-
-                    i += 1
-                    s = t
-
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
-        except KeyboardInterrupt:
-            pass
-
-        self.stream.close_stream()
-        if display:
-            cv2.destroyAllWindows()
-
 # main entry point
 if __name__ == '__main__':
     import fire
-    fire.Fire({'track': Tracker, 'record': Recorder})
+    fire.Fire(Tracker)

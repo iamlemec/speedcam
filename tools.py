@@ -3,6 +3,7 @@ import time
 import toml
 import numpy as np
 import pandas as pd
+from threading import Thread, Event
 
 ##
 ## dates
@@ -21,10 +22,9 @@ def datestring(t=None, tz='US/Eastern'):
 
 def load_config(path=None):
     config = toml.load(path) if path is not None else {}
-    scene, camera = config.get('scene', {}), config.get('camera', {})
-
+    scene, camera = config.get('scene', {}), config.get('camera', None)
+    params = (camera['K'], camera['D']) if camera is not None else None
     fov_width = scene.get('width', 1)
-    params = camera.get('params', None)
 
     return {
         'fov_width': fov_width,
@@ -105,6 +105,9 @@ class Streamer:
         if self.stream.isOpened():
             self.stream.release()
 
+    def is_active(self):
+        return self.stream.isOpened()
+
     def read_frame(self, flip=False, scale=None):
         status, frame = self.stream.read()
         if status:
@@ -117,43 +120,50 @@ class Streamer:
                 frame = cv2.resize(frame, size1, interpolation=cv2.INTER_LANCZOS4)
             return frame
 
+# continuously pull frames from the camera
+class StreamerThread(Thread):
+    def __init__(self, stream, name='camera-reader-thread', **kwargs):
+        self.stream = stream
+        self.args = kwargs
+        self.exit = Event()
+        self.frame = None
+        super().__init__(name=name)
+
+    def run(self):
+        while True:
+            if self.exit.is_set():
+                break
+            if self.stream.is_active():
+                self.frame = self.stream.read_frame(**self.args)
+
+    def get(self):
+        if self.frame is None:
+            return None
+        else:
+            return self.frame.copy()
+
+    def close(self):
+        self.exit.set()
+        self.join()
+
 ##
 ## testing
 ##
 
-def stream(src=0, size=None, fps=30):
+def stream(src=0, size=None, fps=30, stats=False):
     delta = 1/fps
 
-    # acquire device
-    capture = cv2.VideoCapture(src)
-    capture.set(cv2.CAP_PROP_BUFFERSIZE, 2)
-
-    # set video size
-    if size is not None:
-        w, h = size
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-
-    data = {'status': None, 'frame': None, 'bail': False}
-    def update():
-        while True:
-            if capture.isOpened():
-                data['status'], data['frame'] = capture.read()
-            if data['bail']:
-                break
-            time.sleep(delta)
-
-    def cleanup():
-        # close windows
-        cv2.destroyAllWindows()
-
-        # release device (causing update thread exit)
-        if capture.isOpened():
-            capture.release()
-
-    # Start frame retrieval thread
-    thread = Thread(target=update, daemon=True)
+    # acquire device and start thread
+    stream = Streamer()
+    stream.open_stream(src=src, size=size)
+    thread = StreamerThread(stream)
     thread.start()
+
+    # cleanup for later
+    def cleanup():
+        thread.close()
+        stream.close_stream()
+        cv2.destroyAllWindows()
 
     # init start time
     s = time.time()
@@ -161,12 +171,12 @@ def stream(src=0, size=None, fps=30):
     while True:
         try:
             t = time.time()
-            if data['frame'] is not None and t >= s + delta:
-                print(f'Frame delta: {t-s}')
-                cv2.imshow('frame', data['frame'])
+            if (frame := thread.get()) is not None and t >= s + delta:
+                if stats:
+                    print(f'fps: {1/(t-s)}')
                 s = t
+                cv2.imshow('frame', thread.frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                data['bail'] = True
                 break
         except KeyboardInterrupt:
             break
