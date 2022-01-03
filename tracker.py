@@ -13,7 +13,7 @@ from collections import deque
 
 from kalman import BoxTracker
 from analyzer import calc_speed
-from tools import datestring, load_config, write_video, Streamer, StreamerThread
+from tools import datestring, load_config, write_video, Streamer
 
 ##
 ## object detection
@@ -21,15 +21,14 @@ from tools import datestring, load_config, write_video, Streamer, StreamerThread
 
 class Tracker:
     def __init__(self,
-        qual_cutoff=0.3, edge_cutoff=0.02, track_length=250, match_cutoff=0.8, match_timeout=1.5,
-        time_decay=2.0, video_length=100, model_type='ultralytics/yolov5', model_size='yolov5x',
-        config_path='config.toml'
+        src=0, udp=None, size=None, flip=False, scale=None, qual_cutoff=0.3, edge_cutoff=0.02,
+        track_length=250, match_cutoff=0.8, match_timeout=1.5, time_decay=2.0, video_length=100,
+        model_type='ultralytics/yolov5', model_size='yolov5x', config_path='config.toml'
     ):
         # load yolov5 model from torch hub
-        if model_type is not None:
-            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            self.model = torch.hub.load(model_type, model_size, pretrained=True, device=self.device)
-            self.classes = self.model.names
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        self.model = torch.hub.load(model_type, model_size, pretrained=True, device=self.device)
+        self.classes = self.model.names
 
         # box detection options
         self.edge_cutoff = edge_cutoff # reject boxes nearly touching edges
@@ -54,7 +53,7 @@ class Tracker:
         params = config['params']
 
         # create streaming interface
-        self.streamer = Streamer(params=params)
+        self.streamer = Streamer(src=src, udp=udp, size=size, params=params, flip=flip, scale=scale)
 
     # score a single frame
     def calc_boxes(self, frame):
@@ -156,14 +155,12 @@ class Tracker:
             if self.video is not None:
                 write_video(f'{fpath}.mp4', self.video, fps, self.streamer.size)
 
-    def stream(self, src=0, udp=None, out=True, tracks=None, size=None, flip=False, scale=None):
+    def stream(self, out=True, fps=10, tracks=None):
         # reset tracker
         self.boxes.reset()
 
         # start input stream
-        self.streamer.open_stream(src=src, udp=udp, size=size)
-        thread = StreamerThread(self.streamer, flip=flip, scale=scale)
-        thread.start()
+        self.streamer.start()
 
         # open output stream
         if type(out) is str:
@@ -172,20 +169,14 @@ class Tracker:
 
         # cleanup call for later
         def cleanup():
-            thread.close() # send exit signal
-            self.streamer.close_stream()
-
+            self.streamer.close() # send exit signal
             if out is True:
                 cv2.destroyAllWindows()
             elif out is not False:
                 out.release()
 
         try:
-            while True:
-                # fetch next frame
-                if (frame := thread.get()) is None:
-                    continue
-
+            for frame in self.streamer.loop():
                 # record receive time
                 timestamp = time.time()
 

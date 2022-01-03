@@ -3,21 +3,19 @@
 import time
 import cv2
 
-from tools import load_config, Streamer, StreamerThread
+from tools import load_config, Streamer
 
 class Recorder:
-    def __init__(self, config_path='config.toml'):
+    def __init__(
+        self, src=0, udp=None, size=None, flip=False, scale=None, config_path='config.toml'
+    ):
         config = load_config(config_path)
         params = config['params']
-        self.streamer = Streamer(params=params)
+        self.streamer = Streamer(src=src, udp=udp, size=size, params=params, flip=flip, scale=scale)
 
-    def video(self, src=0, udp=None, out=None, fps=30, size=None, flip=False, scale=None, display=True):
-        delay = 1/fps
-
+    def video(self, out=None, fps=30, display=True):
         # open input stream
-        self.streamer.open_stream(src=src, udp=udp, size=size)
-        thread = StreamerThread(self.streamer, flip=flip, scale=scale)
-        thread.start()
+        self.streamer.start()
 
         # open output stream
         if out is not None:
@@ -25,20 +23,12 @@ class Recorder:
             out = cv2.VideoWriter(out, four_cc, fps, self.streamer.size)
 
         try:
-            s = time.time()
+            for frame in self.streamer.loop(fps=fps):
+                if out is not None:
+                    out.write(frame)
 
-            while True:
-                if (frame := thread.get()) is None:
-                    continue
-
-                if (t := time.time()) >= s + delay:
-                    s = t
-
-                    if out is not None:
-                        out.write(frame)
-
-                    if display:
-                        cv2.imshow('snapshot', frame)
+                if display:
+                    cv2.imshow('snapshot', frame)
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -46,8 +36,7 @@ class Recorder:
             pass
 
         # close input stream
-        thread.close()
-        self.streamer.close_stream()
+        self.streamer.close()
 
         # close output stream
         if out is not None:
@@ -57,31 +46,23 @@ class Recorder:
         if display:
             cv2.destroyAllWindows()
 
-    def images(self, src=0, udp=None, out=None, delay=2.0, size=None, flip=False, scale=None, display=True):
-        self.streamer.open_stream(src=src, udp=udp, size=size)
-        thread = StreamerThread(self.streamer, flip=flip, scale=scale)
-        thread.start()
+    def images(self, out=None, delay=2.0, display=True):
+        fps = 1/delay
+
+        # open input stream
+        self.streamer.start()
 
         try:
-            i = 0
-            s = time.time()
+            for frame in self.streamer.loop(fps=fps):
+                if out is not None:
+                    fpath = os.path.join(out, f'snapshot_{i}.jpg')
+                    cv2.imwrite(fpath, frame)
+                    print(fpath)
 
-            while True:
-                if (frame := thread.get()) is None:
-                    continue
+                if display:
+                    cv2.imshow('snapshot', frame)
 
-                if (t := time.time()) >= s + delay:
-                    s = t
-
-                    if out is not None:
-                        fpath = os.path.join(out, f'snapshot_{i}.jpg')
-                        cv2.imwrite(fpath, frame)
-                        print(fpath)
-
-                    if display:
-                        cv2.imshow('snapshot', frame)
-
-                    i += 1
+                i += 1
 
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
@@ -89,8 +70,7 @@ class Recorder:
             pass
 
         # close input stream
-        thread.close()
-        self.streamer.close_stream()
+        self.streamer.close()
 
         # close display viewport
         if display:
