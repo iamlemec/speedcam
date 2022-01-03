@@ -4,6 +4,8 @@ Speed tracking using YOLOv5 and Kalman filter matching.
 
 ![car track](promo/car_track.gif)
 
+Estimated speed: 19.0 ± 0.5 mph
+
 # Usage
 
 Get the URL to your camera's RTSP stream (which we'll call `STREAM_URL` below). For me it was something like this
