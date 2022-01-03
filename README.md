@@ -2,7 +2,7 @@
 
 Speed tracking using YOLOv5 and Kalman filter matching.
 
-![car track](promo/car_track.gif)
+<img src="promo/car_track.gif" alt="car track" width="500" />
 
 Estimated speed: 19.0 ± 0.5 mph
 
