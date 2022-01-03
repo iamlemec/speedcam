@@ -2,7 +2,7 @@
 
 Speed tracking using YOLOv5 and Kalman filter matching.
 
-![car snapshot](promo/car_snapshot.png)
+![car track](promo/car_track.gif)
 
 # Usage
 
