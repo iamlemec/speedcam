@@ -23,7 +23,8 @@ class Tracker:
     def __init__(self,
         src=0, udp=None, size=None, flip=False, scale=None, qual_cutoff=0.3, edge_cutoff=0.02,
         track_length=250, match_cutoff=0.8, match_timeout=1.5, time_decay=2.0, video_length=100,
-        model_type='ultralytics/yolov5', model_size='yolov5x', config_path='config.toml'
+        model_type='ultralytics/yolov5', model_size='yolov5x', config_path='config.toml',
+        tracks_path='tracks'
     ):
         # load yolov5 model from torch hub
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -39,6 +40,11 @@ class Tracker:
             match_timeout=match_timeout, match_cutoff=match_cutoff,
             time_decay=time_decay, track_length=track_length
         )
+
+        # track output directory
+        self.tracks_path = tracks_path
+        if not os.path.isdir(tracks_path):
+            os.mkdir(tracks_path)
 
         # video saving
         if video_length is not None:
@@ -121,7 +127,7 @@ class Tracker:
 
         return frame
 
-    def process_track(self, num, trk, tracks=None):
+    def process_track(self, num, trk):
         data = trk.dataframe()
 
         # compute differentials
@@ -147,65 +153,60 @@ class Tracker:
         print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}, fps={fps:.3f}')
 
         # store stats and video
-        if tracks is not None:
-            if not os.path.isdir(tracks):
-                os.mkdir(tracks)
-            fpath = os.path.join(tracks, f'{tstr}_{lab}_{num}')
+        if self.tracks_path is not None:
+            fpath = os.path.join(self.tracks_path, f'{tstr}_{lab}_{num}')
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
                 write_video(f'{fpath}.mp4', self.video, fps, self.streamer.size)
 
-    def stream(self, out=True, fps=10, tracks=None):
-        # reset tracker
-        self.boxes.reset()
+    def process_frame(self, frame):
+        # record receive time
+        timestamp = time.time()
 
+        # get features
+        coords, quals, labels = self.calc_boxes(frame)
+        feats = self.calc_features(frame, coords)
+
+        # update tracker
+        detect = list(zip(labels, feats))
+        match, done = self.boxes.update(timestamp, detect)
+
+        # handle completed tracks
+        for num, trk in done.items():
+            self.process_track(num, trk)
+
+        # draw boxes on screen
+        labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
+        final = self.plot_boxes(frame, coords, quals, labels1)
+
+        # rolling save frame
+        if self.video is not None:
+            self.video.append(final)
+            self.times.append(timestamp)
+
+        return final
+
+    def stream(self, display=True):
         # start input stream
         self.streamer.start()
 
-        # open output stream
-        if type(out) is str:
-            four_cc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = cv2.VideoWriter(out, four_cc, fps, self.streamer.size)
+        # get implied fov
+        w, h = self.streamer.size
+        self.fov = self.fov_width, self.fov_width*(h/w)
 
-        # cleanup call for later
+        # cleanup for later
         def cleanup():
             self.streamer.close() # send exit signal
-            if out is True:
+            if display:
                 cv2.destroyAllWindows()
-            elif out is not False:
-                out.release()
 
         try:
             for frame in self.streamer.loop():
-                # record receive time
-                timestamp = time.time()
+                final = self.process_frame(frame)
 
-                # get features
-                coords, quals, labels = self.calc_boxes(frame)
-                feats = self.calc_features(frame, coords)
-
-                # update tracker
-                detect = list(zip(labels, feats))
-                match, done = self.boxes.update(timestamp, detect)
-
-                # handle completed tracks
-                for num, trk in done.items():
-                    self.process_track(num, trk, tracks=tracks)
-
-                # draw boxes on screen
-                labels1 = [f'{self.classes[l]} {i}' for i, l in zip(match, labels)]
-                final = self.plot_boxes(frame, coords, quals, labels1)
-
-                # rolling save frame
-                if self.video is not None:
-                    self.video.append(final)
-                    self.times.append(timestamp)
-
-                # display/save frame
-                if out is True:
+                # display frame
+                if display:
                     cv2.imshow('waroncars', final)
-                elif out is not False:
-                    out.write(final)
 
                 # get user input
                 if cv2.waitKey(1) & 0xFF == ord('q'):

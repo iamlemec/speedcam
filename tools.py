@@ -3,7 +3,7 @@ import time
 import toml
 import numpy as np
 import pandas as pd
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 
 ##
 ## dates
@@ -74,6 +74,7 @@ class Streamer(Thread):
         # thread components
         self.exit = Event()
         self.started = Event()
+        self.lock = Lock()
         self.frame = None
         super().__init__(name='streamer-thread')
 
@@ -88,7 +89,9 @@ class Streamer(Thread):
             if self.exit.is_set():
                 break
             if self.is_active():
-                self.frame = self.read_frame()
+                frame = self.read_frame()
+                with self.lock:
+                    self.frame = frame
 
         self.close_stream()
 
@@ -96,7 +99,10 @@ class Streamer(Thread):
         if self.frame is None:
             return None
         else:
-            return self.frame.copy()
+            with self.lock:
+                frame = self.frame.copy()
+                self.frame = None
+            return frame
 
     def close(self):
         self.exit.set()
@@ -189,3 +195,8 @@ def stream(src=0, udp=None, size=None, fps=30, flip=False, scale=None):
         raise e
 
     cleanup()
+
+# main entry point
+if __name__ == '__main__':
+    import fire
+    fire.Fire({'stream': stream})
