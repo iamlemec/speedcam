@@ -4,6 +4,10 @@
 import os
 os.environ['OPENBLAS_NUM_THREADS'] = '1'
 
+# disable warnings
+import warnings
+warnings.filterwarnings('ignore')
+
 import time
 import cv2
 import torch
