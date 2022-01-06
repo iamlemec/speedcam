@@ -39,11 +39,15 @@ You may need to undistort the image coming from your camera. This is common for 
 3. Pass these to the `calibrate/calibrate.py` script to impute the camera curvature parameters
 4. Copy these `K` and `D` values into the `camera` section of `config.toml`
 
+There are some good blog posts on how exactly to go about this:
+- https://medium.com/@kennethjiang/calibrate-fisheye-lens-using-opencv-333b05afa0b0
+- https://medium.com/vacatronics/3-ways-to-calibrate-your-camera-using-opencv-and-python-395528a51615
+
 # Scene Calibration
 
 You need to know the width of the scene observed by your camera to determine speeds. This is of course at a particular distance from the camera itself. In this case, it would be the distance to the center of the roadway you're observing (right now you have to observe the roadway in a perpendicular manner).
 
-One can calculate the width using the distance to the roadway and the angular field of view of your camera, but keep in mind that published FOV values my be slightly inexact and you lose some of the image in the undistortion process, so in the end setting the `scene.width` value in `config.toml` is going to be a bit of an art. See my calculation at the top of `config.toml` for some guidance. The entered width should be in meters.
+If you're able to, you can directly measure the width of the observed road surface. Alternatively, one can calculate the width using the distance to the roadway and the angular field of view of your camera, but keep in mind that published FOV values my be slightly inexact and you lose some of the image in the undistortion process, so in the end setting the `scene.width` value in `config.toml` is going to be a bit of an art. See my calculation at the top of `config.toml` for some guidance. The entered width should be in meters.
 
 # Algorithm
 

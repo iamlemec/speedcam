@@ -108,7 +108,7 @@ def mahalanobis_distance(x, P, z):
     z1 = z - x
     Pi = robust_inverse(P)
     d = z1 @ Pi @ z1
-    return chi2.cdf(d, 4)
+    return chi2.cdf(d, 7)
 
 # x, y, w, h, r, g, b
 kalman_args = {

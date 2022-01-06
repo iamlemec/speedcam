@@ -76,7 +76,7 @@ def plot_track(path='tracks', disp='speed', ax=None):
             )
 
 # requires field of view info → fov: w x h
-def calc_speed(data, fov, units='mph'):
+def calc_speed(data, fov, units='mph', rsquared=False):
     data = data.copy()
     data['t'] -= data['t'].iloc[0]
     data['x'] *= fov[0]
@@ -101,7 +101,11 @@ def calc_speed(data, fov, units='mph'):
         v *= kph_per_ms
         σ *= kph_per_ms
 
-    return v, σ
+    if rsquared:
+        r2 = 0.5*(res_x.rsquared+res_y.rsquared)
+        return v, σ, r2
+    else:
+        return v, σ
 
 def track_info(path='tracks', data=None, fov='config.toml', units='mph'):
     if type(fov) is str:
@@ -121,8 +125,9 @@ def track_info(path='tracks', data=None, fov='config.toml', units='mph'):
         rang = data.max() - data.min()
         N, Δt = len(data), rang['t']
         Δx, Δy = rang['x'], rang['y']
-        v, σ = calc_speed(data, fov, units=units)
+        v, σ, r2 = calc_speed(data, fov, units=units, rsquared=True)
         return {
             'fname': path, 'time': ts, 'label': lab, 'number': num,
             'frames': N, 'Δt': Δt, 'Δx': Δx, 'Δy': Δy, 'v': v, 'σ': σ,
+            'r2': r2,
         }
