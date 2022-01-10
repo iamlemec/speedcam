@@ -1,6 +1,6 @@
 # Speedcam
 
-Speed tracking using YOLOv5 and Kalman filter matching.
+Speed tracking using YOLOv5 and Kalman filter matching. Check out the [blog post](http://doughanley.com/blogs/?src=speedcam/speedcam.md) on my website
 
 <img src="promo/car_track.gif" alt="car track" width="500" />
 
