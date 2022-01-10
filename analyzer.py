@@ -92,7 +92,7 @@ def calc_speed(data, fov, units='mph', rsquared=False):
     σ2y = res_y.cov_params().loc['t', 't']
 
     v = np.sqrt(vx**2+vy**2)
-    σ = np.sqrt(σ2x+σ2y)
+    σ = np.sqrt((vx/v)**2*σ2x+(vy/v)**2*σ2y)
 
     if units == 'mph':
         v *= mph_per_ms

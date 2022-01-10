@@ -1,28 +1,28 @@
-# War on Cars
+# Speedcam
 
 Speed tracking using YOLOv5 and Kalman filter matching.
 
 <img src="promo/car_track.gif" alt="car track" width="500" />
 
-Estimated speed: 19.0 ± 0.5 mph
+Estimated speed: 19.0 ± 0.4 mph
 
 # Usage
 
-Get the URL to your camera's RTSP stream (which we'll call `STREAM_URL` below). For me it was something like this
+Get your camera's device number or the URL to your camera's RTSP stream (which we'll call `CAMERA` below). For me it was either `0` or something like this
 ```
 rtsp://username:password@192.168.1.232:554/live/ch1
 ```
 
 This will start the tracker and output data to the `tracks` directory, while outputting match stats to the console in real time
 ```bash
-python3 tracker.py stream --src STREAM_URL
+python3 tracker.py stream --src CAMERA
 ```
 There are a bunch of options you can use to tweak the algorithm if you look at the `Tracker` constructor in `tracker.py`.
 
 You can also directly use the Python interface with something like this
 ```python
 import tracker
-track = Tracker(src=STREAM_URL)
+track = Tracker(src=CAMERA)
 track.stream()
 ```
 Note that this might cause issues if you preload `numpy` in IPython. If you see very high multithreaded CPU usage, set the flag
