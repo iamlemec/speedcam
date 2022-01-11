@@ -27,8 +27,7 @@ class Tracker:
     def __init__(self,
         src=0, udp=None, size=None, flip=False, scale=None, qual_cutoff=0.3, edge_cutoff=0.02,
         track_length=250, match_cutoff=0.8, match_timeout=1.5, time_decay=2.0, video_length=100,
-        model_type='ultralytics/yolov5', model_size='yolov5x', config_path='config.toml',
-        tracks_path='tracks'
+        model_type='ultralytics/yolov5', model_size='yolov5x', tracks='tracks', config=None
     ):
         # load yolov5 model from torch hub
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -46,9 +45,9 @@ class Tracker:
         )
 
         # track output directory
-        self.tracks_path = tracks_path
-        if not os.path.isdir(tracks_path):
-            os.mkdir(tracks_path)
+        self.tracks = tracks
+        if not os.path.isdir(tracks):
+            os.mkdir(tracks)
 
         # video saving
         if video_length is not None:
@@ -58,7 +57,7 @@ class Tracker:
             self.video = self.times = None
 
         # scene/camera config
-        config = load_config(config_path)
+        config = load_config(config)
         self.fov_width = config['fov_width']
         params = config['params']
 
@@ -157,8 +156,8 @@ class Tracker:
         print(f'{lab} #{num}: N={N}, Δt={Δt:.2f}, Δx={Δx:.3f}, μv={μv:.3f}, σv={σv:.3f}, fps={fps:.3f}')
 
         # store stats and video
-        if self.tracks_path is not None:
-            fpath = os.path.join(self.tracks_path, f'{tstr}_{lab}_{num}')
+        if self.tracks is not None:
+            fpath = os.path.join(self.tracks, f'{tstr}_{lab}_{num}')
             data.to_csv(f'{fpath}.csv', index=False)
             if self.video is not None:
                 write_video(f'{fpath}.mp4', self.video, fps, self.streamer.size)
@@ -210,7 +209,7 @@ class Tracker:
 
                 # display frame
                 if display:
-                    cv2.imshow('waroncars', final)
+                    cv2.imshow('speedcam', final)
 
                 # get user input
                 if cv2.waitKey(1) & 0xFF == ord('q'):

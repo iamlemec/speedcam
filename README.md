@@ -17,7 +17,7 @@ This will start the tracker and output data to the `tracks` directory, while out
 ```bash
 python3 tracker.py stream --src CAMERA
 ```
-There are a bunch of options you can use to tweak the algorithm if you look at the `Tracker` constructor in `tracker.py`.
+There are a bunch of options you can use to tweak the algorithm if you look at the `Tracker` constructor in `tracker.py`. In particular, if the display window is large and the framerate seems low, you might add something like `--size 640x480`.
 
 You can also directly use the Python interface with something like this
 ```python
@@ -37,7 +37,7 @@ You may need to undistort the image coming from your camera. This is common for 
 1. Print out `calibrate/checkerboard.png`
 2. Run `recorder.Recorder.images()` to take a bunch of still images of the checkboard in various orientations
 3. Pass these to the `calibrate/calibrate.py` script to impute the camera curvature parameters
-4. Copy these `K` and `D` values into the `camera` section of `config.toml`
+4. Copy these `K` and `D` values into the `camera` section of `config.toml` and pass that to the `--config` flag
 
 There are some good blog posts on how exactly to go about this:
 - https://medium.com/@kennethjiang/calibrate-fisheye-lens-using-opencv-333b05afa0b0

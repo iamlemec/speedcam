@@ -7,9 +7,9 @@ from tools import load_config, Streamer
 
 class Recorder:
     def __init__(
-        self, src=0, udp=None, size=None, flip=False, scale=None, config_path='config.toml'
+        self, src=0, udp=None, size=None, flip=False, scale=None, config=None
     ):
-        config = load_config(config_path)
+        config = load_config(config)
         params = config['params']
         self.streamer = Streamer(src=src, udp=udp, size=size, params=params, flip=flip, scale=scale)
 
